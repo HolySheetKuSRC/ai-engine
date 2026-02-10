@@ -1,0 +1,21 @@
+
+from fastapi import FastAPI
+from src.config import settings
+from src.routers import ocr, sheets
+import uvicorn
+
+app = FastAPI(title="AI OCR Service")
+
+app.include_router(ocr.router)
+app.include_router(sheets.router)
+
+@app.get("/")
+def health_check():
+    return {"status": "ok", "env": settings.env}
+
+def main() -> None:
+    print(f"Service starting in {settings.env} mode")
+    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)
+
+if __name__ == "__main__":
+    main()
