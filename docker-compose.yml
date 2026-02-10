@@ -1,28 +1,13 @@
 version: '3.8'
 
 services:
-  # AI Microservice
-  api:
+  web:
     build: .
     ports:
       - "8000:8000"
     volumes:
-      - ./src:/app/src  # Hot reload code
+      - .:/app
     environment:
-      - DATABASE_URL=postgresql+asyncpg://user:password@db:5432/aitigravity_mock
-      - TYPHOON_API_KEY=your_key
-    depends_on:
-      - db
-
-  # Mock Database
-  db:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=aitigravity_mock
-    ports:
-      - "5432:5432"
-    volumes:
-      # บรรทัดนี้คือพระเอก! มันจะรัน SQL Script เพื่อสร้างตารางจำลองให้ทันที
-      - ./docker/init-mock-db.sql:/docker-entrypoint-initdb.d/init.sql
+      - WORKERS=4
+      - TIMEOUT=600
+    restart: always
