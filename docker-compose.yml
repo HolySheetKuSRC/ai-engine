@@ -7,6 +7,8 @@ services:
       - "8000:8000"
     volumes:
       - .:/app
+    env_file:
+      - .env
     environment:
       - WORKERS=4
       - TIMEOUT=600
