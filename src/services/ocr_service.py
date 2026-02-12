@@ -2,10 +2,31 @@
 import os
 import asyncio
 import aiofiles
+import hashlib
+import re
+from typing import Tuple
 from pypdf import PdfReader
 from typhoon_ocr import ocr_document
 
-async def extract_text_from_pdf(file_bytes: bytes) -> str:
+def calculate_file_hash(file_bytes: bytes) -> str:
+    """Calculates MD5 hash of file bytes."""
+    return hashlib.md5(file_bytes).hexdigest()
+
+def is_junk_content(text: str) -> bool:
+    """
+    Returns True if content is considered junk.
+    Logic: Length < 50 chars OR Thai character ratio < 10%.
+    """
+    if len(text) < 50:
+        return True
+    
+    # Count Thai characters (Unicode range \u0E00-\u0E7F)
+    thai_chars = len(re.findall(r'[\u0E00-\u0E7F]', text))
+    ratio = (thai_chars / len(text)) * 100
+    
+    return ratio < 10
+
+async def extract_text_from_pdf(file_bytes: bytes) -> Tuple[str, int]:
     """
     Extracts text from a PDF file (bytes) using Typhoon OCR.
     Handles multi-page PDFs by processing pages concurrently.
@@ -45,7 +66,7 @@ async def extract_text_from_pdf(file_bytes: bytes) -> str:
         
         # 4. Concatenate results
         full_text = "\n\n".join(pages_text)
-        return full_text
+        return full_text, num_pages
 
     except Exception as e:
         print(f"Error during OCR processing: {e}")

@@ -8,5 +8,5 @@ class AIAnalysisResult(BaseModel):
     summary: str = Field(..., description="AI-generated summary of the content")
     assessment: List[str] = Field(..., description="List of key assessment points")
     tags: List[str] = Field(..., description="List of relevant hashtags")
-    suggested_price: float = Field(0.0, description="Suggested price based on content quality")
-    page_count: Optional[int] = Field(None, description="Number of pages in the document")
+    # suggested_price removed
+    page_count: int = Field(..., description="Number of pages in the document")
