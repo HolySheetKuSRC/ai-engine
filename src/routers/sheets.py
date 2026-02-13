@@ -1,10 +1,12 @@
 from src.services.ocr_service import extract_text_from_pdf, calculate_file_hash, is_junk_content
 from src.services.analysis_service import analyze_sheet_content
 from src.services.webhook_service import send_webhook
+from src.services.download_service import download_pdf_from_url
 from src.database import get_async_session, AnalyzeJob, async_session_maker
 from src.schemas.ai_response import AIAnalysisResult
 import logging
 from fastapi import APIRouter, File, UploadFile, HTTPException, BackgroundTasks, Depends, Form, status
+from typing import Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from uuid import UUID
@@ -88,24 +90,34 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
 @router.post("/analyze", status_code=status.HTTP_202_ACCEPTED)
 async def analyze_sheet(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
+    file_url: Optional[str] = Form(None),
     webhook_url: str | None = Form(None),
     db: AsyncSession = Depends(get_async_session)
 ):
     """
     Async AI Analysis Pipeline:
-    1. Upload File (PDF)
+    1. Upload File (PDF) OR Provide URL
     2. Create Job (Pending)
     3. Return Job ID (202 Accepted)
     4. Background: OCR -> AI -> DB Update -> Webhook
     """
-    if file.content_type != "application/pdf":
-        raise HTTPException(status_code=400, detail="File must be a PDF")
-    
+    if not file and not file_url:
+        raise HTTPException(status_code=400, detail="Either 'file' or 'file_url' must be provided")
+
     try:
-        content = await file.read()
+        content = b""
+        if file_url:
+            # Download from URL
+            content = await download_pdf_from_url(file_url)
+        elif file:
+            # Read uploaded file
+            if file.content_type != "application/pdf":
+                raise HTTPException(status_code=400, detail="File must be a PDF")
+            content = await file.read()
+            
         if len(content) == 0:
-             raise HTTPException(status_code=400, detail="Empty file")
+             raise HTTPException(status_code=400, detail="Empty file or download failed")
 
         # Create Job
         new_job = AnalyzeJob(webhook_url=webhook_url, status="pending")
