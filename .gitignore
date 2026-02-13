@@ -9,3 +9,4 @@ venv/
 .vscode/
 temp_files/
 *.pdf
+data/
