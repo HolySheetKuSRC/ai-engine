@@ -7,7 +7,8 @@ from sqlalchemy import String, DateTime, JSON
 from uuid import uuid4, UUID
 
 # SQLite Database for Job Tracking
-DATABASE_URL = "sqlite+aiosqlite:///./jobs.db"
+os.makedirs("./data", exist_ok=True)
+DATABASE_URL = "sqlite+aiosqlite:///./data/jobs.db"
 
 class Base(DeclarativeBase):
     pass
