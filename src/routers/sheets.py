@@ -1,8 +1,12 @@
 from src.services.ocr_service import extract_text_from_pdf, calculate_file_hash, is_junk_content
 from src.services.analysis_service import analyze_sheet_content
+from src.services.webhook_service import send_webhook
+from src.database import get_async_session, AnalyzeJob, async_session_maker
 from src.schemas.ai_response import AIAnalysisResult
 import logging
-from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi import APIRouter, File, UploadFile, HTTPException, BackgroundTasks, Depends, Form, status
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 from uuid import UUID
 
 router = APIRouter(prefix="/sheets", tags=["Sheets"])
@@ -13,75 +17,129 @@ PROCESSED_CACHE = {}
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@router.post("/analyze", response_model=AIAnalysisResult)
-async def analyze_sheet(file: UploadFile = File(...)):
+# Background Task Logic
+async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: str | None):
+    async with async_session_maker() as session:
+        try:
+            # Update status to processing
+            stmt = select(AnalyzeJob).where(AnalyzeJob.id == job_id)
+            result = await session.execute(stmt)
+            job = result.scalar_one_or_none()
+            if job:
+                job.status = "processing"
+                await session.commit()
+            
+            # 1. OCR
+            # Security: Check file size/bytes/hash checks could be done here or in endpoint.
+            # (Doing it here to keep endpoint fast, but repeated hash calc is okay)
+            
+            ocr_text, page_count = await extract_text_from_pdf(file_bytes)
+            
+            # Security: Junk Filter
+            if is_junk_content(ocr_text):
+                raise ValueError("Invalid or unreadable content (Junk Filter)")
+
+            # 2. AI Analysis (Chunking handled in service)
+            ai_data = await analyze_sheet_content(ocr_text)
+            
+            summary = ai_data.get("summary", "No summary available")
+            file_hash = calculate_file_hash(file_bytes)
+            
+            # Security: Watermarking
+            summary += f"\n\n(Verified by AI - Ref: {file_hash[:8]})"
+            
+            # Construct Result
+            final_result = {
+                "filename": "async_job", # We might want to pass filename too, but for now simple
+                "ocr_content": ocr_text,
+                "summary": summary,
+                "assessment": ai_data.get("assessment", []),
+                "tags": ai_data.get("tags", []),
+                "page_count": page_count
+            }
+            
+            # 3. Update DB (Success)
+            # Re-fetch job to avoid detached instance issues if session closed/re-opened? 
+            # We are in same session.
+            job.status = "completed"
+            job.result = final_result
+            await session.commit()
+            
+            # 4. Webhook
+            if webhook_url:
+                await send_webhook(webhook_url, final_result)
+                
+        except Exception as e:
+            logger.error(f"Background task failed for job {job_id}: {e}")
+            # Update DB (Failure)
+            # Need to re-fetch if transaction rolled back?
+            # We'll try to update in a new transaction block if needed, but here simple:
+            try:
+                stmt = select(AnalyzeJob).where(AnalyzeJob.id == job_id)
+                result = await session.execute(stmt)
+                job = result.scalar_one_or_none()
+                if job:
+                    job.status = "failed"
+                    job.error_message = str(e)
+                    await session.commit()
+            except Exception as db_e:
+                logger.error(f"Failed to update job status to failed: {db_e}")
+
+@router.post("/analyze", status_code=status.HTTP_202_ACCEPTED)
+async def analyze_sheet(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    webhook_url: str | None = Form(None),
+    db: AsyncSession = Depends(get_async_session)
+):
     """
-    Stateless AI Analysis Pipeline:
+    Async AI Analysis Pipeline:
     1. Upload File (PDF)
-    2. Extract Text (OCR)
-    3. Analyze Content (AI)
-    4. Return Analysis Result (No DB Save)
+    2. Create Job (Pending)
+    3. Return Job ID (202 Accepted)
+    4. Background: OCR -> AI -> DB Update -> Webhook
     """
     if file.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="File must be a PDF")
     
     try:
-        # 1. Read File Logic
         content = await file.read()
-        logger.info(f"Processing file: {file.filename} ({len(content)} bytes)")
-
-        # Security: Check file size/bytes before hashing (implicit in read())
         if len(content) == 0:
              raise HTTPException(status_code=400, detail="Empty file")
 
-        # Security: Processing Cache (DoS Protection)
-        file_hash = calculate_file_hash(content)
+        # Create Job
+        new_job = AnalyzeJob(webhook_url=webhook_url, status="pending")
+        db.add(new_job)
+        await db.commit()
+        await db.refresh(new_job)
         
-        if file_hash in PROCESSED_CACHE:
-            logger.info(f"Cache hit for hash: {file_hash}")
-            return PROCESSED_CACHE[file_hash]
-
-        # 2. OCR Extraction
-        ocr_text, page_count = await extract_text_from_pdf(content)
+        # Start Background Task
+        background_tasks.add_task(process_analysis_task, new_job.id, content, webhook_url)
         
-        if not ocr_text:
-             raise HTTPException(status_code=400, detail="Could not extract text from PDF")
-             
-        # Security: Junk Filter
-        if is_junk_content(ocr_text):
-            logger.warning(f"Junk content detected for file: {file.filename}")
-            raise HTTPException(status_code=400, detail="Invalid or unreadable content")
-
-        logger.info("OCR Extraction completed.")
-        
-        # 3. AI Analysis
-        ai_data = await analyze_sheet_content(ocr_text)
-        logger.info("AI Analysis completed.")
-        
-        summary = ai_data.get("summary", "No summary available")
-        
-        # Security: Watermarking
-        summary += f"\n\n(Verified by AI - Ref: {file_hash[:8]})"
-
-        # 4. Return Result (Stateless)
-        result = AIAnalysisResult(
-            filename=file.filename,
-            ocr_content=ocr_text,
-            summary=summary,
-            assessment=ai_data.get("assessment", []),
-            tags=ai_data.get("tags", []),
-            page_count=page_count
-        )
-        
-        # Update Cache
-        if len(PROCESSED_CACHE) >= 100:
-            PROCESSED_CACHE.clear()
-            logger.info("Cache cleared (limit reached)")
-            
-        PROCESSED_CACHE[file_hash] = result
-        
-        return result
+        return {
+            "job_id": new_job.id,
+            "status": "pending",
+            "message": "Job accepted. Processing in background."
+        }
 
     except Exception as e:
-        logger.error(f"Error in analysis pipeline: {e}")
+        logger.error(f"Error in analyze endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/jobs/{job_id}")
+async def get_job_status(job_id: UUID, db: AsyncSession = Depends(get_async_session)):
+    stmt = select(AnalyzeJob).where(AnalyzeJob.id == job_id)
+    result = await db.execute(stmt)
+    job = result.scalar_one_or_none()
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+        
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "result": job.result,
+        "error_message": job.error_message,
+        "created_at": job.created_at
+    }
+

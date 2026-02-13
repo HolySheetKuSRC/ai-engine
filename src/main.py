@@ -1,10 +1,19 @@
 
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from src.database import init_db
 from src.config import settings
 from src.routers import ocr, sheets
 import uvicorn
 
-app = FastAPI(title="AI OCR Service")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await init_db()
+    yield
+    # Shutdown
+
+app = FastAPI(title="AI OCR Service", lifespan=lifespan)
 
 app.include_router(ocr.router)
 app.include_router(sheets.router)

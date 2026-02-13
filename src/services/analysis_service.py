@@ -1,6 +1,6 @@
-
 import os
 import json
+import asyncio
 from openai import AsyncOpenAI
 import logging
 
@@ -31,29 +31,64 @@ The JSON must contain:
 Return ONLY valid JSON. Do not include markdown formatting like ```json ... ```.
 """
 
+
 async def analyze_sheet_content(full_text: str) -> dict:
     """
-    Analyzes the OCR text using Typhoon AI to generate summary, assessment, and tags.
+    Public entry point: Analyzes OCR text with chunking strategy if needed.
     """
     if not full_text:
-        return {
-            "summary": "No content to analyze.",
-            "assessment": [],
-            "tags": []
-        }
+        return _empty_result()
+        
+    CHUNK_SIZE = 4000
+    
+    # If text is small, direct analysis
+    if len(full_text) <= CHUNK_SIZE:
+        return await _call_ai_api(full_text)
+        
+    # Chunking Strategy
+    chunks = [full_text[i:i+CHUNK_SIZE] for i in range(0, len(full_text), CHUNK_SIZE)]
+    logger.info(f"Text too large ({len(full_text)} chars). Splitting into {len(chunks)} chunks.")
+    
+    # Process chunks concurrently
+    tasks = [_call_ai_api(chunk, is_partial=True) for chunk in chunks]
+    results = await asyncio.gather(*tasks)
+    
+    # Merge summaries
+    combined_summary = "\n".join([r.get("summary", "") for r in results])
+    
+    # Final Pass
+    logger.info("Running final analysis on merged summaries...")
+    final_result = await _call_ai_api(combined_summary)
+    
+    # Merge tags/assessments if needed (optional, but let's trust the final pass to re-extract key points from the summary)
+    # Alternatively, we could aggregate all tags from chunks, but a fresh pass on the summary is usually cleaner.
+    
+    return final_result
 
-    # Limit text length to avoid token limits (approx 6k chars to stay safe with Typhoon API)
-    truncated_text = full_text[:6000]
+def _empty_result():
+    return {
+        "summary": "No content to analyze.",
+        "assessment": [],
+        "tags": []
+    }
 
+async def _call_ai_api(text: str, is_partial: bool = False) -> dict:
+    """
+    Low-level function to call Typhoon AI.
+    """
     try:
+        # Prompt adjustment for partial chunks if needed, but existing system prompt is generic enough.
+        # Maybe add a note if partial? "Summarize this part of the document."
+        # For now, keep it simple.
+
         response = await client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"Analyze this content:\n\n{truncated_text}"}
+                {"role": "user", "content": f"Analyze this content:\n\n{text}"}
             ],
             temperature=0.3,
-            max_tokens=8192,  # Typhoon SDK: max_tokens = Prompt + Response
+            max_tokens=2048 if is_partial else 4096,
             response_format={"type": "json_object"}
         )
 
