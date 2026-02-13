@@ -102,22 +102,37 @@ async def analyze_sheet(
     3. Return Job ID (202 Accepted)
     4. Background: OCR -> AI -> DB Update -> Webhook
     """
-    if not file and not file_url:
-        raise HTTPException(status_code=400, detail="Either 'file' or 'file_url' must be provided")
+    # Normalize inputs
+    normalized_url = (file_url or "").strip()
+    is_url_provided = normalized_url.startswith(("http://", "https://"))
+    
+    # Check if file is provided and not empty
+    is_file_provided = False
+    file_content = b""
+    if file and file.filename:
+        file_content = await file.read()
+        if len(file_content) > 0:
+            is_file_provided = True
 
     try:
         content = b""
-        if file_url:
+        if is_url_provided:
             # Download from URL
-            content = await download_pdf_from_url(file_url)
-        elif file:
-            # Read uploaded file
+            content = await download_pdf_from_url(normalized_url)
+        elif is_file_provided:
+            # Use uploaded file
             if file.content_type != "application/pdf":
+                # Basic check, background task does deeper OCR/PDF check
                 raise HTTPException(status_code=400, detail="File must be a PDF")
-            content = await file.read()
+            content = file_content
+        else:
+            raise HTTPException(
+                status_code=400, 
+                detail="Please provide either a PDF file or a valid file_url."
+            )
             
         if len(content) == 0:
-             raise HTTPException(status_code=400, detail="Empty file or download failed")
+             raise HTTPException(status_code=400, detail="Empty content or download failed")
 
         # Create Job
         new_job = AnalyzeJob(webhook_url=webhook_url, status="pending")

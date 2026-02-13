@@ -32,8 +32,14 @@ async_session_maker = async_sessionmaker(
 )
 
 async def init_db():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception as e:
+        if "already exists" in str(e):
+            pass
+        else:
+            raise e
 
 async def get_async_session() -> AsyncSession:
     async with async_session_maker() as session:
