@@ -1,14 +1,10 @@
 import os
-import shutil
 import uuid
 import aiofiles
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from pydub import AudioSegment
-from src.database import get_async_session
-from src.models.ai_dataset import AiDatasetRecord
-from src.services.asr_service import transcribe_audio
-from src.services.summary_service import summarize_lecture
+from src.database import get_async_session, AnalyzeJob
+from src.services.audio_processor import process_audio_job
 
 router = APIRouter(
     prefix="/api/audio",
@@ -19,76 +15,56 @@ TEMP_DIR = "./temp_audio"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
 @router.post("/transcribe")
-async def transcribe_and_summarize(
+async def transcribe_audio_background(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_async_session)
 ):
     """
-    Upload an audio file, transcribe it, summarize it, and store the result.
-    Supports various audio formats by converting to mp3 if necessary.
+    Upload an audio file (mp3/wav) for background processing.
+    Returns a job_id immediately.
     """
-    # 1. Save the uploaded file temporarily
+    # 1. Validate file extension
     file_extension = os.path.splitext(file.filename)[1].lower()
-    unique_filename = f"{uuid.uuid4()}{file_extension}"
-    original_file_path = os.path.join(TEMP_DIR, unique_filename)
-    converted_file_path = None
+    if file_extension not in [".wav", ".mp3", ".m4a"]: # Allow m4a as we handle it in processor too (or should we?)
+        # User requirement said "only .mp3/.wav" for this specific request, but previously we supported m4a. 
+        # Let's keep supporting m4a if pydub can handle it, but for strict compliance with prompt:
+        # "only .mp3/.wav" -> actually, let's allow m4a as the user previously asked for it and pydub handles it.
+        # But if the user strictly wants mp3/wav now, I should probably stick to that?
+        # "Change POST ... to accept an UploadFile (only .mp3/.wav)"
+        # Okay, I will restrict to mp3/wav to follow the prompt exactly, but I'll add m4a comment.
+        if file_extension not in [".wav", ".mp3"]:
+             raise HTTPException(status_code=400, detail="Unsupported file format. Allowed: .wav, .mp3")
 
+    # 2. Create Job
+    job_id = uuid.uuid4()
+    job = AnalyzeJob(id=job_id, status="pending", result={})
+    session.add(job)
+    await session.commit()
+    
+    # 3. Save file temporarily
+    unique_filename = f"{job_id}{file_extension}"
+    file_path = os.path.join(TEMP_DIR, unique_filename)
+    
     try:
-        async with aiofiles.open(original_file_path, 'wb') as out_file:
-            while content := await file.read(1024 * 1024):  # Read in chunks
+        async with aiofiles.open(file_path, 'wb') as out_file:
+            while content := await file.read(1024 * 1024):
                 await out_file.write(content)
-
-        # 2. Check if conversion is needed
-        # Typhoon ASR likely supports wav, mp3, mpeg, mpga, m4a, ogg, wav, webm. 
-        # But if the user specifically asked to convert if not in specific list, we follow that.
-        # User said: "if it's not wav, mp3, flac, ogg, opus" -> convert.
-        # However, pydub depends on ffmpeg.
-        target_file_path = original_file_path
-        supported_formats = [".wav", ".mp3", ".flac", ".ogg", ".opus"]
+                
+        # 4. Dispatch Background Task
+        background_tasks.add_task(process_audio_job, job_id, file_path)
         
-        if file_extension not in supported_formats:
-            # Convert to mp3
-            converted_filename = f"{uuid.uuid4()}_converted.mp3"
-            converted_file_path = os.path.join(TEMP_DIR, converted_filename)
-            
-            # Load and export using pydub
-            # Note: This operation blocks the event loop. For production with high load, 
-            # consider running in a thread pool executor.
-            audio = AudioSegment.from_file(original_file_path)
-            audio.export(converted_file_path, format="mp3")
-            
-            target_file_path = converted_file_path
-
-        # 3. Transcribe audio
-        raw_text = await transcribe_audio(target_file_path)
-
-        # 4. Summarize transcript
-        summary_text = await summarize_lecture(raw_text)
-
-        # 5. Store in database
-        record = AiDatasetRecord(
-            filename=file.filename,
-            source_type='audio',
-            raw_text=raw_text,
-            summary_text=summary_text
-        )
-        session.add(record)
-        await session.commit()
-        await session.refresh(record)
-
         return {
-            "id": record.id,
-            "filename": record.filename,
-            "raw_text": record.raw_text,
-            "summary_text": record.summary_text
+            "job_id": str(job_id),
+            "status": "processing"
         }
-
+        
     except Exception as e:
+        # If saving fails, we should probably fail the job or just error out
+        # Since we haven't dispatched the task yet, we can just error out
+        # But we should probably cleanup the DB record or mark it failed?
+        await session.delete(job)
+        await session.commit()
+        if os.path.exists(file_path):
+            os.remove(file_path)
         raise HTTPException(status_code=500, detail=str(e))
-
-    finally:
-        # Cleanup temporary files
-        if os.path.exists(original_file_path):
-            os.remove(original_file_path)
-        if converted_file_path and os.path.exists(converted_file_path):
-            os.remove(converted_file_path)
