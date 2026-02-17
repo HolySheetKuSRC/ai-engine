@@ -10,3 +10,5 @@ venv/
 temp_files/
 *.pdf
 data/
+*.db
+temp_audio/
