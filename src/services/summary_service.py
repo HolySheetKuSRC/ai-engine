@@ -22,7 +22,7 @@ async def summarize_lecture(text: str) -> str:
         str: The summary text.
     """
     response = await client.chat.completions.create(
-        model="typhoon-v2.1-12b-instruct",
+        model="typhoon-v2.5-30b-a3b-instruct",
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": text},
