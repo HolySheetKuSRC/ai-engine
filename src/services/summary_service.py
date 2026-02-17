@@ -28,7 +28,7 @@ async def summarize_lecture(text: str) -> str:
             {"role": "user", "content": text},
         ],
         temperature=0.7,
-        max_tokens=1024,
+        max_tokens=32000,
     )
     
     return response.choices[0].message.content
