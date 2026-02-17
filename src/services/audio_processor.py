@@ -19,7 +19,7 @@ async def process_audio_job(job_id: uuid.UUID, file_path: str):
     """
     Background task to process audio:
     1. Update job status to processing.
-    2. Load audio (pydub).
+    2. Load audio (pydub) in a separate thread.
     3. Chunk into 10-min segments.
     4. Transcribe each chunk.
     5. Combine text.
@@ -33,10 +33,9 @@ async def process_audio_job(job_id: uuid.UUID, file_path: str):
             await _update_job_status(session, job_id, "processing")
             
             # 2. Load Audio
-            # Note: AudioSegment.from_file is blocking, so we run it in a thread/executor if needed, 
-            # but for 1 file it might be okay. ideally run_in_executor.
-            loop = asyncio.get_event_loop()
-            audio = await loop.run_in_executor(None, AudioSegment.from_file, file_path)
+            # Use asyncio.to_thread to run blocking I/O in a separate thread
+            # preventing the event loop from freezing.
+            audio = await asyncio.to_thread(AudioSegment.from_file, file_path)
             
             # 3. Chunking
             duration_ms = len(audio)
@@ -53,15 +52,16 @@ async def process_audio_job(job_id: uuid.UUID, file_path: str):
                 chunk_filename = f"{job_id}_chunk_{i}.mp3"
                 chunk_path = os.path.join(TEMP_DIR, chunk_filename)
                 
-                # Exporting is blocking IO
-                await loop.run_in_executor(None, lambda: chunk.export(chunk_path, format="mp3"))
+                # Exporting is blocking IO, offload to thread
+                await asyncio.to_thread(chunk.export, chunk_path, format="mp3")
                 
                 try:
                     # 4. Transcribe Chunk
                     chunk_text = await transcribe_audio(chunk_path)
                     full_transcript.append(chunk_text)
                 finally:
-                    # Cleanup chunk immediately
+                    # Cleanup chunk immediately using os.remove (blocking but fast enough, 
+                    # or could use to_thread but typically fine for unlink)
                     if os.path.exists(chunk_path):
                         os.remove(chunk_path)
 
@@ -84,10 +84,6 @@ async def process_audio_job(job_id: uuid.UUID, file_path: str):
             await session.flush()
             
             # Update Job with processing results
-            # We store the main content in AiDatasetRecord to keep the job table light, 
-            # but user requested to save transcribed text in result column. 
-            # We will store a reference and a snippet or the full text if not too huge.
-            # Given constraints, we'll store full text as requested, but be mindful of JSON limits.
             stmt = (
                 update(AnalyzeJob)
                 .where(AnalyzeJob.id == job_id)
