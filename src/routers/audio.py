@@ -1,6 +1,7 @@
 import os
 import uuid
-import aiofiles
+import shutil
+import asyncio
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_async_session, AnalyzeJob
@@ -14,6 +15,11 @@ router = APIRouter(
 TEMP_DIR = "./temp_audio"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
+def save_file_sync(file_obj, dest_path):
+    """Sync function to save file, to be run in executor."""
+    with open(dest_path, "wb") as buffer:
+        shutil.copyfileobj(file_obj, buffer)
+
 @router.post("/transcribe")
 async def transcribe_audio_background(
     background_tasks: BackgroundTasks,
@@ -26,19 +32,13 @@ async def transcribe_audio_background(
     """
     # 1. Validate file extension
     file_extension = os.path.splitext(file.filename)[1].lower()
-    if file_extension not in [".wav", ".mp3", ".m4a"]: # Allow m4a as we handle it in processor too (or should we?)
-        # User requirement said "only .mp3/.wav" for this specific request, but previously we supported m4a. 
-        # Let's keep supporting m4a if pydub can handle it, but for strict compliance with prompt:
-        # "only .mp3/.wav" -> actually, let's allow m4a as the user previously asked for it and pydub handles it.
-        # But if the user strictly wants mp3/wav now, I should probably stick to that?
-        # "Change POST ... to accept an UploadFile (only .mp3/.wav)"
-        # Okay, I will restrict to mp3/wav to follow the prompt exactly, but I'll add m4a comment.
-        if file_extension not in [".wav", ".mp3"]:
-             raise HTTPException(status_code=400, detail="Unsupported file format. Allowed: .wav, .mp3")
+    if file_extension not in [".wav", ".mp3"]:
+         raise HTTPException(status_code=400, detail="Unsupported file format. Allowed: .wav, .mp3")
 
     # 2. Create Job
     job_id = uuid.uuid4()
-    job = AnalyzeJob(id=job_id, status="pending", result={})
+    # User requested status="processing" immediately
+    job = AnalyzeJob(id=job_id, status="processing", result={})
     session.add(job)
     await session.commit()
     
@@ -47,22 +47,22 @@ async def transcribe_audio_background(
     file_path = os.path.join(TEMP_DIR, unique_filename)
     
     try:
-        async with aiofiles.open(file_path, 'wb') as out_file:
-            while content := await file.read(1024 * 1024):
-                await out_file.write(content)
-                
+        # Use run_in_executor to avoid blocking the event loop during file I/O
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, save_file_sync, file.file, file_path)
+            
         # 4. Dispatch Background Task
+        # Critical: process_audio_job must match the signature expected by background_tasks
         background_tasks.add_task(process_audio_job, job_id, file_path)
         
+        # 5. Return Immediately
         return {
             "job_id": str(job_id),
             "status": "processing"
         }
         
     except Exception as e:
-        # If saving fails, we should probably fail the job or just error out
-        # Since we haven't dispatched the task yet, we can just error out
-        # But we should probably cleanup the DB record or mark it failed?
+        # Cleanup if initial save fails
         await session.delete(job)
         await session.commit()
         if os.path.exists(file_path):
