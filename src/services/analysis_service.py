@@ -14,7 +14,9 @@ BASE_URL = "https://api.opentyphoon.ai/v1"
 
 client = AsyncOpenAI(
     api_key=TYPHOON_API_KEY,
-    base_url=BASE_URL
+    base_url=BASE_URL,
+    timeout=45.0,
+    max_retries=1
 )
 
 MODEL_NAME = "typhoon-v2.5-30b-a3b-instruct"
@@ -106,8 +108,5 @@ async def _call_ai_api(text: str, is_partial: bool = False) -> dict:
 
     except Exception as e:
         logger.error(f"AI Analysis failed: {e}")
-        return {
-            "summary": "AI Analysis failed.",
-            "assessment": [str(e)],
-            "tags": ["#Error"]
-        }
+        # Re-raise to allow background task to catch and mark job as failed
+        raise e

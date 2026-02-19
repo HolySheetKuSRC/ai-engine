@@ -107,7 +107,10 @@ async def analyze_sheet(
     normalized_url = (file_url or "").strip()
     is_url_provided = normalized_url.startswith(("http://", "https://"))
     
-    # Check if file is provided and not empty
+    # Sanitize Swagger default "string" value
+    if webhook_url == "string":
+        webhook_url = None
+
     is_file_provided = False
     file_content = b""
     if file and file.filename:
