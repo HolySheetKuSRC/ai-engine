@@ -15,16 +15,10 @@ def calculate_file_hash(file_bytes: bytes) -> str:
 def is_junk_content(text: str) -> bool:
     """
     Returns True if content is considered junk.
-    Logic: Length < 50 chars OR Thai character ratio < 10%.
+    Logic: Length < 10 chars. 
+    (Trusting LLM to handle technical/symbol-heavy documents)
     """
-    if len(text) < 50:
-        return True
-    
-    # Count Thai characters (Unicode range \u0E00-\u0E7F)
-    thai_chars = len(re.findall(r'[\u0E00-\u0E7F]', text))
-    ratio = (thai_chars / len(text)) * 100
-    
-    return ratio < 10
+    return len(text) < 10
 
 async def extract_text_from_pdf(file_bytes: bytes) -> Tuple[str, int]:
     """
