@@ -88,7 +88,7 @@ async def _call_ai_api(text: str, is_partial: bool = False) -> dict:
                 {"role": "user", "content": f"Analyze this content:\n\n{text}"}
             ],
             temperature=0.3,
-            max_tokens=2048 if is_partial else 4096,
+            max_tokens=32000,
             response_format={"type": "json_object"}
         )
 

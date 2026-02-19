@@ -25,7 +25,7 @@ async def transcribe_audio(file_path: str) -> str:
     with open(file_path, "rb") as audio_file:
         transcription = await client.audio.transcriptions.create(
             model="typhoon-asr-realtime",
-            file=audio_file
+            file=("file.mp3", audio_file, "audio/mp3") 
         )
     
     return transcription.text
