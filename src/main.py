@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from src.database import init_db
 from src.config import settings
-from src.routers import ocr, sheets, audio, chat, download, jobs, webhook
+from src.routers import ocr, sheets, audio, chat
 import uvicorn
 
 @asynccontextmanager
