@@ -17,6 +17,7 @@ class AnalyzeJob(Base):
     __tablename__ = "analyze_jobs"
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    sheet_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     status: Mapped[str] = mapped_column(String, default="pending") # pending, processing, completed, failed
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(String, nullable=True)
