@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from src.database import init_db
 from src.config import settings
-from src.routers import ocr, sheets, audio
+from src.routers import ocr, sheets, audio, chat, ai_analysis, download, jobs, webhook
 import uvicorn
 
 @asynccontextmanager
@@ -18,6 +18,7 @@ app = FastAPI(title="AI OCR Service", lifespan=lifespan)
 app.include_router(ocr.router)
 app.include_router(sheets.router)
 app.include_router(audio.router)
+app.include_router(chat.router)
 
 @app.get("/")
 def health_check():
