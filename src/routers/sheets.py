@@ -93,6 +93,7 @@ async def analyze_sheet(
     file: Optional[UploadFile] = File(None),
     file_url: Optional[str] = Form(None),
     webhook_url: str | None = Form(None),
+    sheet_id: Optional[str] = Form(None),
     db: AsyncSession = Depends(get_async_session)
 ):
     """
@@ -135,7 +136,11 @@ async def analyze_sheet(
              raise HTTPException(status_code=400, detail="Empty content or download failed")
 
         # Create Job
-        new_job = AnalyzeJob(webhook_url=webhook_url, status="pending")
+        new_job = AnalyzeJob(
+            webhook_url=webhook_url, 
+            sheet_id=sheet_id,
+            status="pending"
+        )
         db.add(new_job)
         await db.commit()
         await db.refresh(new_job)
@@ -145,6 +150,7 @@ async def analyze_sheet(
         
         return {
             "job_id": new_job.id,
+            "sheet_id": new_job.sheet_id,
             "status": "pending",
             "message": "Job accepted. Processing in background."
         }
@@ -170,3 +176,29 @@ async def get_job_status(job_id: UUID, db: AsyncSession = Depends(get_async_sess
         "created_at": job.created_at
     }
 
+@router.get("/jobs/by-sheet/{sheet_id}")
+async def get_job_by_sheet(sheet_id: str, db: AsyncSession = Depends(get_async_session)):
+    """
+    Poll job status by sheet_id.
+    Returns the latest job associated with this sheet_id.
+    """
+    stmt = (
+        select(AnalyzeJob)
+        .where(AnalyzeJob.sheet_id == sheet_id)
+        .order_by(AnalyzeJob.created_at.desc())
+        .limit(1)
+    )
+    result = await db.execute(stmt)
+    job = result.scalar_one_or_none()
+    
+    if not job:
+        raise HTTPException(status_code=404, detail=f"No job found for sheet_id: {sheet_id}")
+        
+    return {
+        "job_id": job.id,
+        "sheet_id": job.sheet_id,
+        "status": job.status,
+        "result": job.result,
+        "error_message": job.error_message,
+        "created_at": job.created_at
+    }
