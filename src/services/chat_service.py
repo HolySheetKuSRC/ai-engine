@@ -6,12 +6,15 @@ from src.models.ai_dataset import AiDatasetRecord # RAG source
 from src.schemas.chat import ChatRequest
 from src.config import settings
 
+from langsmith import traceable
+
 # Initialize Typhoon Client
 client = AsyncOpenAI(
     api_key=settings.TYPHOON_API_KEY,
     base_url=settings.TYPHOON_BASE_URL
 )
 
+@traceable(run_type="chain", name="Typhoon_RAG_Pipeline")
 async def process_chat(request: ChatRequest, db: AsyncSession):
     session_id = request.session_id
     user_message = request.message

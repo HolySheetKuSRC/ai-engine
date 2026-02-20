@@ -24,7 +24,7 @@ async def chat_endpoint(
     Streams the response from Typhoon model.
     """
     try:
-        response_generator = await process_chat(request, db)
+        response_generator = await process_chat(chat_request, db)
         return StreamingResponse(response_generator, media_type="text/event-stream")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

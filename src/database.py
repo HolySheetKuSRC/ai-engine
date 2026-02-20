@@ -34,6 +34,10 @@ async_session_maker = async_sessionmaker(
 
 async def init_db():
     try:
+        # Import models to ensure they are registered with Base.metadata
+        from src.models.chat import ChatHistory
+        from src.models.ai_dataset import AiDatasetRecord
+        
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     except Exception as e:
