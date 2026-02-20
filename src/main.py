@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 from src.database import init_db
 from src.config import settings
-from src.routers import ocr, sheets, audio
+from src.routers import ocr, sheets, audio, chat
 import uvicorn
 
 @asynccontextmanager
@@ -13,11 +13,18 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
 
+from src.core.limiter import limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
+
 app = FastAPI(title="AI OCR Service", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(ocr.router)
 app.include_router(sheets.router)
 app.include_router(audio.router)
+app.include_router(chat.router)
 
 @app.get("/")
 def health_check():
