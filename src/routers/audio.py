@@ -2,6 +2,7 @@ import os
 import uuid
 import shutil
 import asyncio
+import subprocess
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_async_session, AnalyzeJob
@@ -20,6 +21,25 @@ def save_file_sync(file_obj, dest_path):
     with open(dest_path, "wb") as buffer:
         shutil.copyfileobj(file_obj, buffer)
 
+def convert_to_optimized_mp3(input_path: str) -> str:
+    """
+    Convert audio to optimized mono 64k mp3 using ffmpeg via subprocess.
+    """
+    output_path = f"/tmp/{uuid.uuid4().hex}.mp3"
+    command = [
+        "ffmpeg", "-y", "-i", input_path, 
+        "-ac", "1", "-b:a", "64k", output_path
+    ]
+    
+    try:
+        # Run ffmpeg, capture output to avoid hanging
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        return output_path
+    except subprocess.CalledProcessError as e:
+        print(f"FFmpeg failed. Stderr: {e.stderr}")
+        raise HTTPException(status_code=500, detail="Audio conversion failed.")
+
+
 @router.post("/transcribe")
 async def transcribe_audio_background(
     background_tasks: BackgroundTasks,
@@ -30,10 +50,11 @@ async def transcribe_audio_background(
     Upload an audio file (mp3/wav) for background processing.
     Returns a job_id immediately.
     """
-    # 1. Validate file extension
+    # 1. Validate file extension (now accepting more formats since ffmpeg handles it)
     file_extension = os.path.splitext(file.filename)[1].lower()
-    if file_extension not in [".wav", ".mp3"]:
-         raise HTTPException(status_code=400, detail="Unsupported file format. Allowed: .wav, .mp3")
+    allowed_extensions = [".wav", ".mp3", ".m4a", ".ogg", ".flac"]
+    if file_extension not in allowed_extensions:
+         raise HTTPException(status_code=400, detail=f"Unsupported file format. Allowed: {allowed_extensions}")
 
     # 2. Create Job
     job_id = uuid.uuid4()
@@ -51,9 +72,25 @@ async def transcribe_audio_background(
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, save_file_sync, file.file, file_path)
             
-        # 4. Dispatch Background Task
-        # Critical: process_audio_job must match the signature expected by background_tasks
-        background_tasks.add_task(process_audio_job, job_id, file_path)
+        # Convert to optimized MP3 (blocking subprocess, run in thread)
+        optimized_path = await loop.run_in_executor(
+            None, convert_to_optimized_mp3, file_path
+        )
+        
+        # 4. Dispatch Background Task with the OPTIMIZED path
+        # Note: audio_processor needs to clean up the optimized_path
+        # but we also must ensure we clean up the original file_path.
+        # It's safer to let the router clean up the original and pass the optimized one.
+        # However, to be completely safe with background tasks, we should let the
+        # background task clean up both, or clean up the original here if we don't need it.
+        # Actually, since audio_processor receives exactly one path, we'll let it process and clean 
+        # the optimized path. We should clean up the RAW file here right after conversion.
+        
+        background_tasks.add_task(process_audio_job, job_id, optimized_path)
+        
+        # Fast cleanup of the raw uploaded file, since we have the optimized one
+        if os.path.exists(file_path):
+             os.remove(file_path)
         
         # 5. Return Immediately
         return {
