@@ -8,7 +8,7 @@ from src.config import settings
 
 from langsmith import traceable
 from langsmith.wrappers import wrap_openai
-from sentence_transformers import SentenceTransformer
+import httpx
 from supabase import create_client, Client
 
 # Initialize Typhoon Client
@@ -17,11 +17,23 @@ client = wrap_openai(AsyncOpenAI(
     base_url=settings.TYPHOON_BASE_URL
 ))
 
-# Global Local Embedding Model for Semantic Cache
-embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-
 # Initialize Supabase Client for Vector Search
 supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
+# Global async HTTP client for Gemini API to reuse connection pool
+gemini_http_client = httpx.AsyncClient()
+
+async def get_gemini_embedding(text: str) -> list[float]:
+    """Get embedding vector using Google Gemini API."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={settings.GEMINI_API_KEY}"
+    payload = {
+        "model": "models/text-embedding-004",
+        "content": {"parts": [{"text": text}]}
+    }
+    response = await gemini_http_client.post(url, json=payload)
+    response.raise_for_status()
+    data = response.json()
+    return data["embedding"]["values"]
 
 
 async def search_relevant_sheets(db: AsyncSession, user_message: str) -> str:
@@ -141,7 +153,7 @@ async def process_chat(request: ChatRequest, db: AsyncSession):
     # 3. Handle Semantic Caching (Only for Tutor Mode)
     if sheet_id is not None:
         try:
-            query_embedding = embedding_model.encode(user_message).tolist()
+            query_embedding = await get_gemini_embedding(user_message)
             # Query Supabase RPC fn
             cache_response = supabase.rpc("match_semantic_cache", {
                 "query_embedding": query_embedding,
@@ -175,11 +187,8 @@ async def process_chat(request: ChatRequest, db: AsyncSession):
                     await db.commit()
                     
                     async def cached_response_generator():
-                        # Stream the cached answer quickly (chunked) to simulate streaming, or just yield it in chunks
-                        # Here we yield the whole thing, or split for streaming effect:
-                        chunk_size = 50
-                        for i in range(0, len(cached_answer), chunk_size):
-                            yield cached_answer[i:i+chunk_size]
+                        # Stream the cached answer in one large chunk for instant rendering
+                        yield cached_answer
                             
                     return cached_response_generator()
         except Exception as e:
@@ -244,7 +253,7 @@ async def process_chat(request: ChatRequest, db: AsyncSession):
              # Save to Semantic Cache (Only for Tutor Mode)
              if sheet_id is not None:
                  try:
-                     query_emb = embedding_model.encode(user_message).tolist()
+                     query_emb = await get_gemini_embedding(user_message)
                      supabase.table("semantic_cache").insert({
                          "prompt": user_message,
                          "response": full_response_text,
