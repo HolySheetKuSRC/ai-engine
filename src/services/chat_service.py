@@ -7,12 +7,13 @@ from src.schemas.chat import ChatRequest
 from src.config import settings
 
 from langsmith import traceable
+from langsmith.wrappers import wrap_openai
 
 # Initialize Typhoon Client
-client = AsyncOpenAI(
+client = wrap_openai(AsyncOpenAI(
     api_key=settings.TYPHOON_API_KEY,
     base_url=settings.TYPHOON_BASE_URL
-)
+))
 
 @traceable(run_type="chain", name="Typhoon_RAG_Pipeline")
 async def process_chat(request: ChatRequest, db: AsyncSession):
