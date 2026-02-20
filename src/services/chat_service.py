@@ -88,7 +88,7 @@ async def process_chat(request: ChatRequest, db: AsyncSession):
                 model="typhoon-v2.5-30b-a3b-instruct",
                 messages=messages,
                 stream=True,
-                max_tokens=1024,
+                max_tokens=32000,
                 temperature=0.6,
             )
             
