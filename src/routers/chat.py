@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.database import get_async_session
 from src.schemas.chat import ChatRequest
 from src.services.chat_service import process_chat
+from src.core.limiter import limiter
 
 router = APIRouter(
     prefix="/api/chat",
@@ -12,8 +13,10 @@ router = APIRouter(
 )
 
 @router.post("/", response_class=StreamingResponse)
+@limiter.limit("10/minute")
 async def chat_endpoint(
-    request: ChatRequest, 
+    request: Request,
+    chat_request: ChatRequest, 
     db: AsyncSession = Depends(get_async_session)
 ):
     """

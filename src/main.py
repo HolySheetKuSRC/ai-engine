@@ -13,7 +13,13 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
 
+from src.core.limiter import limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi import _rate_limit_exceeded_handler
+
 app = FastAPI(title="AI OCR Service", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.include_router(ocr.router)
 app.include_router(sheets.router)
