@@ -8,12 +8,21 @@ from src.config import settings
 
 from langsmith import traceable
 from langsmith.wrappers import wrap_openai
+from sentence_transformers import SentenceTransformer
+from supabase import create_client, Client
 
 # Initialize Typhoon Client
 client = wrap_openai(AsyncOpenAI(
     api_key=settings.TYPHOON_API_KEY,
     base_url=settings.TYPHOON_BASE_URL
 ))
+
+# Global Local Embedding Model for Semantic Cache
+embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+
+# Initialize Supabase Client for Vector Search
+supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
+
 
 async def search_relevant_sheets(db: AsyncSession, user_message: str) -> str:
     """Search for relevant sheets based on user keywords."""
@@ -129,9 +138,57 @@ async def process_chat(request: ChatRequest, db: AsyncSession):
         # General Mode
         system_instruction = await get_sales_assistant_prompt(db, user_message)
 
+    # 3. Handle Semantic Caching
+    try:
+        query_embedding = embedding_model.encode(user_message).tolist()
+        # Query Supabase RPC fn
+        cache_response = supabase.rpc("match_semantic_cache", {
+            "query_embedding": query_embedding,
+            "match_threshold": 0.85,
+            "match_count": 1
+        }).execute()
+        
+        matches = cache_response.data
+        if matches and len(matches) > 0:
+            cached_answer = matches[0].get("response")
+            if cached_answer:
+                # Cache Hit!
+                # Save User message
+                user_msg_db = ChatHistory(
+                    session_id=session_id,
+                    sheet_id=sheet_id,
+                    role="user",
+                    content=user_message
+                )
+                db.add(user_msg_db)
+                await db.commit()
+                
+                # Save Assistant cached message
+                assistant_msg_db = ChatHistory(
+                    session_id=session_id,
+                    sheet_id=sheet_id,
+                    role="assistant",
+                    content=cached_answer
+                )
+                db.add(assistant_msg_db)
+                await db.commit()
+                
+                async def cached_response_generator():
+                    # Stream the cached answer quickly (chunked) to simulate streaming, or just yield it in chunks
+                    # Here we yield the whole thing, or split for streaming effect:
+                    chunk_size = 50
+                    for i in range(0, len(cached_answer), chunk_size):
+                        yield cached_answer[i:i+chunk_size]
+                        
+                return cached_response_generator()
+    except Exception as e:
+        print(f"Semantic Cache Error: {e}")
+        # Proceed to LLM Call if cache fails
+        pass
+
     messages = [{"role": "system", "content": system_instruction}] + history_messages + [{"role": "user", "content": user_message}]
 
-    # 3. Save User Message
+    # 4. Save User Message
     user_msg_db = ChatHistory(
         session_id=session_id,
         sheet_id=sheet_id,
@@ -182,5 +239,17 @@ async def process_chat(request: ChatRequest, db: AsyncSession):
             )
              db.add(assistant_msg_db)
              await db.commit()
+             
+             # Save to Semantic Cache
+             try:
+                 query_emb = embedding_model.encode(user_message).tolist()
+                 supabase.table("semantic_cache").insert({
+                     "prompt": user_message,
+                     "response": full_response_text,
+                     "embedding": query_emb
+                 }).execute()
+             except Exception as e:
+                 print(f"Failed to save semantic cache: {e}")
 
     return response_generator()
+

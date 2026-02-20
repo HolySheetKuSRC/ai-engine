@@ -37,3 +37,5 @@ aiosqlite>=0.19.0
 pydub==0.25.1
 slowapi
 langsmith
+sentence-transformers
+supabase
