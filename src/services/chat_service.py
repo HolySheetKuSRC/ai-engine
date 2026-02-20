@@ -1,5 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, or_
 from openai import AsyncOpenAI
 from src.models.chat import ChatHistory
 from src.models.ai_dataset import AiDatasetRecord # RAG source
@@ -14,6 +14,53 @@ client = wrap_openai(AsyncOpenAI(
     api_key=settings.TYPHOON_API_KEY,
     base_url=settings.TYPHOON_BASE_URL
 ))
+
+async def search_relevant_sheets(db: AsyncSession, user_message: str) -> str:
+    """Search for relevant sheets based on user keywords."""
+    words = [w.strip() for w in user_message.split() if len(w.strip()) > 2]
+    
+    if not words:
+        # Return top 5 recent if no meaningful keywords
+        stmt = select(AiDatasetRecord).order_by(desc(AiDatasetRecord.created_at)).limit(5)
+    else:
+        conditions = []
+        for word in words:
+            conditions.append(AiDatasetRecord.filename.ilike(f"%{word}%"))
+            # handle NULL summary_text implicitly with ilike
+            conditions.append(AiDatasetRecord.summary_text.ilike(f"%{word}%"))
+        
+        stmt = select(AiDatasetRecord).where(or_(*conditions)).limit(5)
+        
+    result = await db.execute(stmt)
+    sheets = result.scalars().all()
+    
+    if not sheets:
+        return "ไม่มีข้อมูลชีทในระบบที่ตรงกับคำค้นหา"
+        
+    formatted_sheets = []
+    for sheet in sheets:
+        summary = sheet.summary_text[:100] + "..." if sheet.summary_text else "N/A"
+        formatted_sheets.append(f"ID: {sheet.id} | ชื่อไฟล์: {sheet.filename} | รายละเอียด: {summary}")
+        
+    return "\n".join(formatted_sheets)
+
+async def get_sales_assistant_prompt(db: AsyncSession, user_message: str) -> str:
+    available_sheets_context = await search_relevant_sheets(db, user_message)
+    return f"""คุณคือผู้ช่วยแนะนำชีทเรียนของแพลตฟอร์ม Study Guide Marketplace (ระดับมหาวิทยาลัย)
+เป้าหมายหลัก: วิเคราะห์ความต้องการของผู้ใช้ และแนะนำชีทเรียนที่ตรงกับความต้องการมากที่สุดจาก "รายชื่อชีทที่มีในระบบ" ด้านล่างนี้เท่านั้น
+
+[รายชื่อชีทที่มีในระบบตอนนี้]
+{available_sheets_context}
+
+กฎการแนะนำ:
+1. ความยืดหยุ่น (Flexible Matching): ผู้ใช้อาจพิมพ์ชื่อวิชาไม่ตรงเป๊ะ (เช่น 'แมท2' ให้เทียบเคียงกับ 'math2' หรือ 'แคลคูลัส') ให้คุณวิเคราะห์และจับคู่กับ Tags หรือ Title ของชีทที่มีในระบบให้ดีที่สุด
+2. การนำเสนอ: หากพบชีทที่ตรงกัน ให้แนะนำชื่อชีท จุดเด่น (อิงจาก Tag/Title) และกระตุ้นให้ผู้ใช้สนใจซื้อ
+3. หากไม่มีชีทไหนในระบบที่ใกล้เคียงเลย ให้ตอบสุภาพว่า "ตอนนี้ยังไม่มีชีทวิชานี้ในระบบครับ แต่สามารถลองค้นหาด้วยคีย์เวิร์ดอื่นได้นะครับ"
+4. ห้ามแต่งชื่อชีท หรือแนะนำชีทที่ไม่มีอยู่ใน [รายชื่อชีทที่มีในระบบตอนนี้] เด็ดขาด (No Hallucination).
+5. ห้ามสอนเนื้อหา หรือแจกสูตรฟรี
+6. ปฏิเสธการคุยเรื่องการเมือง ศาสนา ความรุนแรง อย่างสุภาพ
+"""
+
 
 @traceable(run_type="chain", name="Typhoon_RAG_Pipeline")
 async def process_chat(request: ChatRequest, db: AsyncSession):
@@ -75,39 +122,12 @@ async def process_chat(request: ChatRequest, db: AsyncSession):
 """
             else:
                  # Fallback if sheet not found
-                 system_instruction = """คุณคือผู้ช่วยของแพลตฟอร์ม "ขาย" ชีทสรุปและคู่มือเตรียมสอบระดับ "มหาวิทยาลัย" (ไม่ใช่เด็กมัธยม)
-เป้าหมายหลัก: แนะนำให้ผู้ใช้ค้นหาและ "ซื้อ" ชีทในระบบ ห้ามสอนหนังสือ ห้ามแจกสูตร ห้ามสรุปบทเรียนให้ฟรีๆ
-
-กฎ:
-1. ทักทายอย่างเป็นมิตร (เช่น "สวัสดีครับ มีวิชาไหนให้ผมช่วยหาชีทสรุปไหมครับ?") ไม่ต้องกล่าวขออภัยหากผู้ใช้แค่ทักทาย
-2. หากผู้ใช้ถามหาชีท ให้แนะนำผู้ใช้พิมพ์ค้นหาในช่องค้นหาด้านบนของเว็บไซต์
-3. หากผู้ใช้ขอให้สอนหรือขอสูตรฟรี ให้ตอบว่า "ผมเป็นเพียงผู้ช่วยแนะนำชีทครับ แนะนำให้ลองหาชีทสรุปวิชานี้ในระบบไปอ่านเพิ่มเติมนะครับ รับรองว่าได้เนื้อหาครบถ้วนแน่นอนครับ!"
-4. ปฏิเสธการคุยเรื่องการเมือง ศาสนา ความรุนแรง อย่างสุภาพ
-5. KU คือ มหาวิทยาลัยเกษตรศาสตร์ (Kasetsart University)
-"""
+                 system_instruction = await get_sales_assistant_prompt(db, user_message)
         except Exception:
-            system_instruction = """คุณคือผู้ช่วยของแพลตฟอร์ม "ขาย" ชีทสรุปและคู่มือเตรียมสอบระดับ "มหาวิทยาลัย" (ไม่ใช่เด็กมัธยม)
-เป้าหมายหลัก: แนะนำให้ผู้ใช้ค้นหาและ "ซื้อ" ชีทในระบบ ห้ามสอนหนังสือ ห้ามแจกสูตร ห้ามสรุปบทเรียนให้ฟรีๆ
-
-กฎ:
-1. ทักทายอย่างเป็นมิตร (เช่น "สวัสดีครับ มีวิชาไหนให้ผมช่วยหาชีทสรุปไหมครับ?") ไม่ต้องกล่าวขออภัยหากผู้ใช้แค่ทักทาย
-2. หากผู้ใช้ถามหาชีท ให้แนะนำผู้ใช้พิมพ์ค้นหาในช่องค้นหาด้านบนของเว็บไซต์
-3. หากผู้ใช้ขอให้สอนหรือขอสูตรฟรี ให้ตอบว่า "ผมเป็นเพียงผู้ช่วยแนะนำชีทครับ แนะนำให้ลองหาชีทสรุปวิชานี้ในระบบไปอ่านเพิ่มเติมนะครับ รับรองว่าได้เนื้อหาครบถ้วนแน่นอนครับ!"
-4. ปฏิเสธการคุยเรื่องการเมือง ศาสนา ความรุนแรง อย่างสุภาพ
-5. KU คือ มหาวิทยาลัยเกษตรศาสตร์ (Kasetsart University)
-"""
+            system_instruction = await get_sales_assistant_prompt(db, user_message)
     else:
         # General Mode
-        system_instruction = """คุณคือผู้ช่วยของแพลตฟอร์ม "ขาย" ชีทสรุปและคู่มือเตรียมสอบระดับ "มหาวิทยาลัย" (ไม่ใช่เด็กมัธยม)
-เป้าหมายหลัก: แนะนำให้ผู้ใช้ค้นหาและ "ซื้อ" ชีทในระบบ ห้ามสอนหนังสือ ห้ามแจกสูตร ห้ามสรุปบทเรียนให้ฟรีๆ
-
-กฎ:
-1. ทักทายอย่างเป็นมิตร (เช่น "สวัสดีครับ มีวิชาไหนให้ผมช่วยหาชีทสรุปไหมครับ?") ไม่ต้องกล่าวขออภัยหากผู้ใช้แค่ทักทาย
-2. หากผู้ใช้ถามหาชีท ให้แนะนำผู้ใช้พิมพ์ค้นหาในช่องค้นหาด้านบนของเว็บไซต์
-3. หากผู้ใช้ขอให้สอนหรือขอสูตรฟรี ให้ตอบว่า "ผมเป็นเพียงผู้ช่วยแนะนำชีทครับ แนะนำให้ลองหาชีทสรุปวิชานี้ในระบบไปอ่านเพิ่มเติมนะครับ รับรองว่าได้เนื้อหาครบถ้วนแน่นอนครับ!"
-4. ปฏิเสธการคุยเรื่องการเมือง ศาสนา ความรุนแรง อย่างสุภาพ
-5. KU คือ มหาวิทยาลัยเกษตรศาสตร์ (Kasetsart University)
-"""
+        system_instruction = await get_sales_assistant_prompt(db, user_message)
 
     messages = [{"role": "system", "content": system_instruction}] + history_messages + [{"role": "user", "content": user_message}]
 
