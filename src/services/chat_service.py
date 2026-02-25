@@ -186,11 +186,12 @@ async def process_chat(request: ChatRequest, db: AsyncSession):
                     db.add(assistant_msg_db)
                     await db.commit()
                     
-                    async def cached_response_generator():
-                        # Stream the cached answer in one large chunk for instant rendering
-                        yield cached_answer
-                            
-                    return cached_response_generator()
+                    return {
+                        "session_id": session_id,
+                        "message": cached_answer,
+                        "sheet_id": sheet_id,
+                        "logs": {"cache_hit": True}
+                    }
         except Exception as e:
             print(f"Semantic Cache Error: {e}")
             # Proceed to LLM Call if cache fails
@@ -208,38 +209,18 @@ async def process_chat(request: ChatRequest, db: AsyncSession):
     db.add(user_msg_db)
     await db.commit()
 
-    # 4. Stream Response & Accumulate
-    full_response_text = ""
-    
-    async def response_generator():
-        nonlocal full_response_text
-        try:
-            stream = await client.chat.completions.create(
-                model="typhoon-v2.5-30b-a3b-instruct",
-                messages=messages,
-                stream=True,
-                max_tokens=32000,
-                temperature=0.6,
-            )
-            
-            async for chunk in stream:
-                if chunk.choices[0].delta.content:
-                    content_chunk = chunk.choices[0].delta.content
-                    full_response_text += content_chunk
-                    yield content_chunk
-                    
-        except Exception as e:
-            yield f"Error: {str(e)}"
+    try:
+        response = await client.chat.completions.create(
+            model="typhoon-v2.5-30b-a3b-instruct",
+            messages=messages,
+            stream=False,
+            max_tokens=32000,
+            temperature=0.6,
+        )
         
-        # 5. Save Assistant Message (After stream completes)
-        # We need a new session or ensure thread safety if we were to use `db` here directly after yield.
-        # But `db` session might be closed or reused? `StreamingResponse` runs in a separate context?
-        # Actually, FastAPI dependency injection creates a session that lives for the request scope.
-        # `StreamingResponse` keeps the connection open.
-        # It's safer to save *after* the loop using the *same* session object passed in, 
-        # asserting it hasn't been closed by some middleware yet.
-        # For StreamingResponse, usually we do cleanup logic after the yield loop.
+        full_response_text = response.choices[0].message.content
         
+        # 5. Save Assistant Message
         if full_response_text:
              assistant_msg_db = ChatHistory(
                 session_id=session_id,
@@ -262,5 +243,18 @@ async def process_chat(request: ChatRequest, db: AsyncSession):
                  except Exception as e:
                      print(f"Failed to save semantic cache: {e}")
 
-    return response_generator()
+        return {
+            "session_id": session_id,
+            "message": full_response_text,
+            "sheet_id": sheet_id,
+            "logs": {"cache_hit": False, "model": "typhoon-v2.5-30b-a3b-instruct"}
+        }
+        
+    except Exception as e:
+        return {
+            "session_id": session_id,
+            "message": f"Error: {str(e)}",
+            "sheet_id": sheet_id,
+            "logs": {"error": True}
+        }
 
