@@ -20,9 +20,6 @@ client = wrap_openai(AsyncOpenAI(
 # Initialize Supabase Client for Vector Search
 supabase: Client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
 
-# Global async HTTP client for Gemini API to reuse connection pool
-gemini_http_client = httpx.AsyncClient()
-
 async def get_gemini_embedding(text: str) -> list[float]:
     """Get embedding vector using Google Gemini API."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={settings.GEMINI_API_KEY}"
@@ -30,10 +27,11 @@ async def get_gemini_embedding(text: str) -> list[float]:
         "model": "models/text-embedding-004",
         "content": {"parts": [{"text": text}]}
     }
-    response = await gemini_http_client.post(url, json=payload)
-    response.raise_for_status()
-    data = response.json()
-    return data["embedding"]["values"]
+    async with httpx.AsyncClient() as gemini_http_client:
+        response = await gemini_http_client.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data["embedding"]["values"]
 
 
 async def search_relevant_sheets(db: AsyncSession, user_message: str) -> str:
@@ -83,7 +81,7 @@ async def get_sales_assistant_prompt(db: AsyncSession, user_message: str) -> str
 """
 
 
-@traceable(run_type="chain", name="Typhoon_RAG_Pipeline")
+# @traceable removed to prevent silent RecursionError crashes when serializing `db: AsyncSession`
 async def process_chat(request: ChatRequest, db: AsyncSession):
     session_id = request.session_id
     user_message = request.message
@@ -113,18 +111,11 @@ async def process_chat(request: ChatRequest, db: AsyncSession):
         
         try:
             # Try to fetch by ID if it's numeric
+            record = None
             if str(sheet_id).isdigit():
                 stmt_rag = select(AiDatasetRecord).where(AiDatasetRecord.id == int(sheet_id))
-            else:
-                 # Or maybe existing sheets are identified by UUID string in another table?
-                 # But purely based on `AiDatasetRecord`, it has `id` (int).
-                 # Let's assume sheet_id maps to AiDatasetRecord.id for now as "study guide text".
-                 # Alternatively, maybe `sheet_id` matches `filename`?
-                 # Given "sheet_id" name, it usually implies the ID.
-                 stmt_rag = select(AiDatasetRecord).where(AiDatasetRecord.id == int(sheet_id))
-
-            result_rag = await db.execute(stmt_rag)
-            record = result_rag.scalar_one_or_none()
+                result_rag = await db.execute(stmt_rag)
+                record = result_rag.scalar_one_or_none()
 
             raw_text = record.raw_text if record else ""
             if raw_text:
