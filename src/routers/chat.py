@@ -12,7 +12,7 @@ router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
-@router.post("/", response_class=StreamingResponse)
+@router.post("/")
 @limiter.limit("10/minute")
 async def chat_endpoint(
     request: Request,
@@ -21,10 +21,10 @@ async def chat_endpoint(
 ):
     """
     Chat endpoint supporting RAG context injection and history.
-    Streams the response from Typhoon model.
+    Returns a unified JSON response.
     """
     try:
-        response_generator = await process_chat(chat_request, db)
-        return StreamingResponse(response_generator, media_type="text/event-stream")
+        response_data = await process_chat(chat_request, db)
+        return response_data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
