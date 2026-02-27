@@ -3,6 +3,7 @@ import json
 import asyncio
 from openai import AsyncOpenAI
 import logging
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -41,7 +42,8 @@ async def analyze_sheet_content(full_text: str) -> dict:
     if not full_text:
         return _empty_result()
         
-    CHUNK_SIZE = 4000
+    # Increased chunk size to reduce the total number of API requests
+    CHUNK_SIZE = 15000
     
     # If text is small, direct analysis
     if len(full_text) <= CHUNK_SIZE:
@@ -51,8 +53,16 @@ async def analyze_sheet_content(full_text: str) -> dict:
     chunks = [full_text[i:i+CHUNK_SIZE] for i in range(0, len(full_text), CHUNK_SIZE)]
     logger.info(f"Text too large ({len(full_text)} chars). Splitting into {len(chunks)} chunks.")
     
-    # Process chunks concurrently
-    tasks = [_call_ai_api(chunk, is_partial=True) for chunk in chunks]
+    # Process chunks concurrently with rate limiting (max 3 concurrent)
+    semaphore = asyncio.Semaphore(3)
+    
+    async def process_chunk_with_limit(chunk: str) -> dict:
+        async with semaphore:
+            # Add a polite delay to avoid burst limits
+            await asyncio.sleep(2)
+            return await _call_ai_api(chunk, is_partial=True)
+
+    tasks = [process_chunk_with_limit(chunk) for chunk in chunks]
     results = await asyncio.gather(*tasks)
     
     # Merge summaries
@@ -74,9 +84,15 @@ def _empty_result():
         "tags": []
     }
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=5, min=5, max=30),
+    retry=retry_if_exception_type(Exception),
+    before_sleep=lambda retry_state: logger.warning(f"Retrying _call_ai_api... Attempt {retry_state.attempt_number} after error: {retry_state.outcome.exception()}")
+)
 async def _call_ai_api(text: str, is_partial: bool = False) -> dict:
     """
-    Low-level function to call Typhoon AI.
+    Low-level function to call Typhoon AI. Includes exponential backoff for rate limits.
     """
     try:
         # Prompt adjustment for partial chunks if needed, but existing system prompt is generic enough.
@@ -108,5 +124,5 @@ async def _call_ai_api(text: str, is_partial: bool = False) -> dict:
 
     except Exception as e:
         logger.error(f"AI Analysis failed: {e}")
-        # Re-raise to allow background task to catch and mark job as failed
+        # Re-raise to trigger tenacity retry
         raise e
