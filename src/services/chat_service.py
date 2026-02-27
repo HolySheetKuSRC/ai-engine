@@ -10,6 +10,11 @@ from langsmith import traceable
 from langsmith.wrappers import wrap_openai
 import httpx
 from supabase import create_client, Client
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize Typhoon Client
 client = wrap_openai(AsyncOpenAI(
@@ -54,13 +59,15 @@ async def search_relevant_sheets(db: AsyncSession, user_message: str) -> str:
     sheets = result.scalars().all()
     
     if not sheets:
+        logger.info(f"search_relevant_sheets: No sheets found for keywords: {words}")
         return "ไม่มีข้อมูลชีทในระบบที่ตรงกับคำค้นหา"
         
     formatted_sheets = []
     for sheet in sheets:
         summary = sheet.summary_text[:100] + "..." if sheet.summary_text else "N/A"
-        formatted_sheets.append(f"ID: {sheet.id} | ชื่อไฟล์: {sheet.filename} | รายละเอียด: {summary}")
-        
+        formatted_sheets.append(f"ID: {sheet.id} | ชื่อไฟล์: {sheet.filename} | รายละเอียด: {summary} | Tags: {sheet.tags}")
+    
+    logger.info(f"search_relevant_sheets: Found {len(sheets)} sheets. Matches: {formatted_sheets}")
     return "\n".join(formatted_sheets)
 
 async def get_sales_assistant_prompt(db: AsyncSession, user_message: str) -> str:
@@ -71,12 +78,12 @@ async def get_sales_assistant_prompt(db: AsyncSession, user_message: str) -> str
 [รายชื่อชีทที่มีในระบบตอนนี้]
 {available_sheets_context}
 
-กฎการแนะนำ:
-1. ความยืดหยุ่น (Flexible Matching): ผู้ใช้อาจพิมพ์ชื่อวิชาไม่ตรงเป๊ะ (เช่น 'แมท2' ให้เทียบเคียงกับ 'math2' หรือ 'แคลคูลัส') ให้คุณวิเคราะห์และจับคู่กับ Tags หรือ Title ของชีทที่มีในระบบให้ดีที่สุด
-2. การนำเสนอ: หากพบชีทที่ตรงกัน ให้แนะนำชื่อชีท จุดเด่น (อิงจาก Tag/Title) และกระตุ้นให้ผู้ใช้สนใจซื้อ
-3. หากไม่มีชีทไหนในระบบที่ใกล้เคียงเลย ให้ตอบสุภาพว่า "ตอนนี้ยังไม่มีชีทวิชานี้ในระบบครับ แต่สามารถลองค้นหาด้วยคีย์เวิร์ดอื่นได้นะครับ"
+กฎการแนะนำ (สำคัญมาก):
+1. ความหน้าเชื่อถือ (Confidence): หากพบชีทใน "รายชื่อชีทที่มีในระบบตอนนี้" ที่เนื้อหา (รายละเอียด/Tags) ใกล้เคียงกับสิ่งที่ผู้ใช้ถาม **คุณต้องแนะนำชีทนั้นทันที** 
+2. การนำเสนอ: ให้พิมพ์ชื่อชีทพร้อม จุดเด่น (อิงจากรายละเอียดและ Tags) และเน้นย้ำว่าชีทนี้ตรงกับสิ่งที่ผู้ใช้กำลังมองหา
+3. หากไม่มีชีทไหนในระบบที่ใกล้เคียงคำถามเลย (หรือรายชื่อชีทว่างเปล่า) ให้ตอบสุภาพว่า "ตอนนี้ยังไม่มีชีทวิชานี้ในระบบครับ แต่ประเด็นนี้..." (แล้วจึงให้ข้อมูลทั่วไปสั้นๆ)
 4. ห้ามแต่งชื่อชีท หรือแนะนำชีทที่ไม่มีอยู่ใน [รายชื่อชีทที่มีในระบบตอนนี้] เด็ดขาด (No Hallucination).
-5. ห้ามสอนเนื้อหา หรือแจกสูตรฟรี
+5. ห้ามแจกสูตรฟรีทั้งหมด หรือสอนเนื้อหาแบบละเอียดเกินไปจนผู้ใช้ไม่จำเป็นต้องซื้อชีท
 6. ปฏิเสธการคุยเรื่องการเมือง ศาสนา ความรุนแรง อย่างสุภาพ
 """
 
@@ -86,6 +93,12 @@ async def process_chat(request: ChatRequest, db: AsyncSession):
     session_id = request.session_id
     user_message = request.message
     sheet_id = request.sheet_id
+
+    # Handle invalid sheet_id inputs like "string", "", "null"
+    if isinstance(sheet_id, str):
+        cleaned_id = sheet_id.strip().lower()
+        if cleaned_id in ["string", "null", "none", ""]:
+            sheet_id = None
 
     # 1. Fetch History (Last 20 messages)
     stmt = (
