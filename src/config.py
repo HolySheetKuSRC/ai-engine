@@ -13,6 +13,8 @@ class Settings:
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    # SQLite path — must match the Docker volume mount target in docker-compose.yml
+    SQLITE_DB_PATH: str = os.getenv("SQLITE_DB_PATH", "/app/data/jobs.db")
 
 
 settings = Settings()

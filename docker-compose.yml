@@ -6,11 +6,12 @@ services:
     command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4 --timeout-keep-alive 360
     volumes:
       - .:/app
-      - ./data:/app/data
+      - ./data:/app/data  # Persists SQLite DB across container restarts
     env_file:
       - .env
     environment:
       - TYPHOON_API_KEY=${TYPHOON_API_KEY}
+      - SQLITE_DB_PATH=/app/data/jobs.db
     restart: always
     # Expose port only to internal network (accessed by nginx)
     expose:
