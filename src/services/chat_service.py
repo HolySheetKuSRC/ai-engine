@@ -1,15 +1,28 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, or_
 from openai import AsyncOpenAI
-from src.models.chat import ChatHistory
-from src.models.ai_dataset import AiDatasetRecord # RAG source
-from src.schemas.chat import ChatRequest
-from src.config import settings
-
 from langsmith import traceable
 from langsmith.wrappers import wrap_openai
 import httpx
 from supabase import create_client, Client
+
+from src.models.chat import ChatHistory
+from src.models.ai_dataset import AiDatasetRecord  # RAG source
+from src.schemas.chat import ChatRequest
+from src.config import settings
+
+# Common Thai and English filler words that carry no search intent.
+# Extend this set as needed.
+_STOP_WORDS: set[str] = {
+    # Thai
+    "คุณ", "มี", "ชีท", "ไหม", "แนะนำ", "หน่อย", "ได้", "ครับ", "ค่ะ", "นะ",
+    "อยาก", "ต้องการ", "เรียน", "มา", "ใน", "ของ", "และ", "หรือ", "กับ", "ที่",
+    "นี้", "นั้น", "เป็น", "จะ", "ให้", "ไป", "มาก", "แบบ", "อะไร", "ขอ",
+    "ดู", "อ่าน", "หา", "เจอ", "จาก", "ทำ", "ใช้", "เกี่ยว", "กับ", "บอก",
+    # English
+    "the", "and", "for", "this", "that", "with", "from", "are", "was", "have",
+    "has", "can", "not", "you", "your", "sheet", "study", "any", "some",
+}
 
 # Initialize Typhoon Client
 client = wrap_openai(AsyncOpenAI(
@@ -35,32 +48,53 @@ async def get_gemini_embedding(text: str) -> list[float]:
 
 
 async def search_relevant_sheets(db: AsyncSession, user_message: str) -> str:
-    """Search for relevant sheets based on user keywords."""
-    words = [w.strip() for w in user_message.split() if len(w.strip()) > 2]
-    
-    if not words:
-        # Return top 5 recent if no meaningful keywords
+    """Search for relevant sheets based on user keywords.
+
+    Steps:
+    1. Debug-log every record currently in ai_dataset_records.
+    2. Strip stop words to isolate high-value keywords.
+    3. Run a LIKE search across filename, summary_text, AND tags.
+    """
+    # --- Debug: always show what is actually in the table ---
+    debug_stmt = select(AiDatasetRecord.filename, AiDatasetRecord.tags)
+    debug_result = await db.execute(debug_stmt)
+    all_rows = debug_result.fetchall()
+    print(f"[DEBUG search_relevant_sheets] {len(all_rows)} record(s) in ai_dataset_records:")
+    for row in all_rows:
+        print(f"  filename='{row[0]}' | tags='{row[1]}'")
+
+    # --- Keyword extraction with stop-word filtering ---
+    raw_words = [w.strip() for w in user_message.split() if len(w.strip()) > 1]
+    keywords = [w for w in raw_words if w.lower() not in _STOP_WORDS]
+
+    if not keywords:
+        # No meaningful keywords — return the 5 most recent sheets
         stmt = select(AiDatasetRecord).order_by(desc(AiDatasetRecord.created_at)).limit(5)
     else:
         conditions = []
-        for word in words:
+        for word in keywords:
+            # Search filename, AI summary, and comma-separated tags
             conditions.append(AiDatasetRecord.filename.ilike(f"%{word}%"))
-            # handle NULL summary_text implicitly with ilike
             conditions.append(AiDatasetRecord.summary_text.ilike(f"%{word}%"))
-        
+            # tags may be NULL; ilike on NULL returns NULL (falsy) — safe with OR
+            conditions.append(AiDatasetRecord.tags.ilike(f"%{word}%"))
+
         stmt = select(AiDatasetRecord).where(or_(*conditions)).limit(5)
-        
+
     result = await db.execute(stmt)
     sheets = result.scalars().all()
-    
+
     if not sheets:
         return "ไม่มีข้อมูลชีทในระบบที่ตรงกับคำค้นหา"
-        
+
     formatted_sheets = []
     for sheet in sheets:
         summary = sheet.summary_text[:100] + "..." if sheet.summary_text else "N/A"
-        formatted_sheets.append(f"ID: {sheet.id} | ชื่อไฟล์: {sheet.filename} | รายละเอียด: {summary}")
-        
+        tags_display = sheet.tags if sheet.tags else "N/A"
+        formatted_sheets.append(
+            f"ID: {sheet.id} | ชื่อ: {sheet.filename} | Tags: {tags_display} | สรุป: {summary}"
+        )
+
     return "\n".join(formatted_sheets)
 
 async def get_sales_assistant_prompt(db: AsyncSession, user_message: str) -> str:

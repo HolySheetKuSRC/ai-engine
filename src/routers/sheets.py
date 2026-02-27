@@ -3,6 +3,7 @@ from src.services.analysis_service import analyze_sheet_content
 from src.services.webhook_service import send_webhook
 from src.services.download_service import download_pdf_from_url
 from src.database import get_async_session, AnalyzeJob, async_session_maker
+from src.models.ai_dataset import AiDatasetRecord
 from src.schemas.ai_response import AIAnalysisResult
 import logging
 from fastapi import APIRouter, File, UploadFile, HTTPException, BackgroundTasks, Depends, Form, status
@@ -61,12 +62,40 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
             }
             
             # 3. Update DB (Success)
-            # Re-fetch job to avoid detached instance issues if session closed/re-opened? 
-            # We are in same session.
             job.status = "completed"
             job.result = final_result
             await session.commit()
-            
+
+            # 3a. Sync to ai_dataset_records so the Chat service can find this sheet.
+            #     Use sheet_id as the logical filename; fall back to str(job_id).
+            record_filename: str = job.sheet_id if job.sheet_id else str(job_id)
+            tags_str: str = ", ".join(ai_data.get("tags", []))
+
+            existing_stmt = select(AiDatasetRecord).where(
+                AiDatasetRecord.filename == record_filename
+            )
+            existing_result = await session.execute(existing_stmt)
+            existing_record = existing_result.scalar_one_or_none()
+
+            if existing_record:
+                # Update in place so chat tutor mode also gets fresh content
+                existing_record.raw_text = ocr_text
+                existing_record.summary_text = summary
+                existing_record.tags = tags_str
+                existing_record.source_type = "sheet"
+            else:
+                dataset_record = AiDatasetRecord(
+                    filename=record_filename,
+                    source_type="sheet",
+                    raw_text=ocr_text,
+                    summary_text=summary,
+                    tags=tags_str,
+                )
+                session.add(dataset_record)
+
+            await session.commit()
+            logger.info(f"Synced '{record_filename}' to ai_dataset_records (tags: {tags_str[:80]})")
+
             # 4. Webhook
             if webhook_url:
                 await send_webhook(webhook_url, final_result)
