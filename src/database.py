@@ -7,8 +7,11 @@ from sqlalchemy import String, DateTime, JSON
 from uuid import uuid4, UUID
 
 # SQLite Database for Job Tracking
-os.makedirs("./data", exist_ok=True)
-DATABASE_URL = "sqlite+aiosqlite:///./data/jobs.db"
+# Use an absolute path so the location is consistent regardless of working directory.
+# Defaults to /app/data/jobs.db which is mapped to the host via a Docker volume.
+_DB_PATH: str = os.getenv("SQLITE_DB_PATH", "/app/data/jobs.db")
+os.makedirs(os.path.dirname(_DB_PATH), exist_ok=True)
+DATABASE_URL: str = f"sqlite+aiosqlite:///{_DB_PATH}"
 
 class Base(DeclarativeBase):
     pass

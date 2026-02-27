@@ -9,6 +9,7 @@ venv/
 .vscode/
 temp_files/
 *.pdf
-data/
+data/*.db
+!data/.gitkeep
 *.db
 temp_audio/
