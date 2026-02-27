@@ -79,7 +79,7 @@ async def analyze_sheet_content(full_text: str) -> dict:
 
 def _empty_result():
     return {
-        "summary": "No content to analyze.",
+        "summary": "ไม่มีเนื้อหาให้วิเคราะห์ (No content to analyze)",
         "assessment": [],
         "tags": []
     }
@@ -123,6 +123,24 @@ async def _call_ai_api(text: str, is_partial: bool = False) -> dict:
             return json.loads(cleaned_content)
 
     except Exception as e:
+        import traceback
         logger.error(f"AI Analysis failed: {e}")
+        print("=== TYPHOON COMPLETION ERROR ===")
+        print(f"Exception Type: {type(e)}")
+        print(f"Error Message: {str(e)}")
+        
+        # Try to extract response body if it's an APIError/HTTPError
+        if hasattr(e, 'response'):
+            try:
+                print(f"Response Body: {e.response.json()}")
+            except Exception:
+                print(f"Raw Response: {e.response.text}")
+        elif hasattr(e, 'body'):
+            print(f"Error Body: {e.body}")
+            
+        print("Traceback:")
+        traceback.print_exc()
+        print("================================")
+        
         # Re-raise to trigger tenacity retry
         raise e
