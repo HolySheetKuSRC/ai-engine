@@ -38,3 +38,4 @@ pydub==0.25.1
 slowapi
 langsmith
 supabase
+google-genai
