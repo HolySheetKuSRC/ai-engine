@@ -1,227 +1,186 @@
 ---
-title: Project Overview
-description: High-level architecture and features.
+title: AI Engine — ภาพรวม
+description: ภาพรวม สถาปัตยกรรม ข้อควรรู้ก่อนใช้งาน workflow และ database schema ของ AI Engine Microservice
 ---
 
-# ภาพรวมโครงการ AI Engine
+import { Aside, Card, CardGrid, Steps } from '@astrojs/starlight/components';
 
-## บทนำ
+# AI Engine
 
-**AI Engine** (aitigravity) เป็น Microservice ที่พัฒนาด้วย FastAPI สำหรับการประมวลผลเอกสารและข้อมูลมัลติมีเดียด้วยเทคโนโลยี AI ระบบนี้ออกแบบมาเพื่อรองรับการทำงานแบบ Asynchronous ที่มีประสิทธิภาพสูง โดยให้บริการหลักทั้ง 4 ด้าน ได้แก่ **การแปลงข้อความจากเอกสาร PDF** ด้วย OCR, **การวิเคราะห์เนื้อหาเอกสารด้วย AI**, **การถอดเสียงจากไฟล์เสียง**, และ **ระบบแชทบอทอัจฉริยะ** ที่รองรับการค้นหาข้อมูลจากฐานข้อมูลแบบ RAG (Retrieval-Augmented Generation)
+**AI Engine** คือ microservice สำหรับงาน AI ทั้งหมดของแพลตฟอร์ม HolySheet ให้บริการสามด้านหลัก ได้แก่
+การวิเคราะห์เอกสาร PDF (OCR + สรุปเนื้อหา), ถอดเสียงไฟล์เสียง (Whisper ASR) และ RAG Chat
+(ตอบคำถามจากเนื้อหาชีทที่บันทึกไว้)
 
-ระบบนี้ถูกออกแบบให้ทำงานในรูปแบบ Clean Architecture โดยแยกชั้นการทำงานออกเป็น Routers, Services, และ Repository Layers เพื่อความยืดหยุ่นและง่ายต่อการบำรุงรักษา
+<CardGrid>
+  <Card title="📄 OCR & วิเคราะห์เนื้อหา" icon="document">
+    แปลง PDF → ข้อความ แล้วสรุปเนื้อหา + ประเมินจุดเด่น + แท็กด้วย Typhoon LLM
+  </Card>
+  <Card title="🎙️ ถอดเสียง" icon="microphone">
+    อัปโหลดไฟล์เสียง (.mp3/.wav/.m4a ฯลฯ) แล้วถอดเป็นข้อความ + บทสรุปบรรยาย
+  </Card>
+  <Card title="💬 RAG Chat" icon="comment">
+    สนทนากับ AI โดย inject เนื้อหาชีทเป็น context พร้อม semantic cache ผ่าน Supabase
+  </Card>
+</CardGrid>
 
-## เทคโนโลยีหลักที่ใช้
+---
 
-### Backend Framework
-- **Python 3.10+** - ภาษาโปรแกรมหลัก
-- **FastAPI 0.128.3** - Web Framework สำหรับ API ที่รวดเร็วและ type-safe
-- **Pydantic V2** - Data validation และ serialization
-- **Uvicorn** - ASGI server สำหรับการรัน FastAPI
-
-### Database & ORM
-- **SQLAlchemy 2.0** - ORM แบบ Async สำหรับจัดการฐานข้อมูล
-- **SQLite 3** (aiosqlite) - ฐานข้อมูลหลักสำหรับ job tracking และ chat history
-- **Supabase** - Vector database สำหรับ semantic search (RAG)
-
-### AI & ML Services
-- **Typhoon OCR (v0.4.1)** - OCR engine สำหรับการแปลงข้อความจาก PDF
-- **Typhoon AI API** - LLM สำหรับการวิเคราะห์และสรุปเนื้อหา
-- **OpenAI-compatible API** - ใช้สำหรับ chat และ completion
-- **Google Gemini API** - Text embedding สำหรับ vector search
-- **OpenAI Whisper** (ผ่าน Typhoon) - ASR (Automatic Speech Recognition)
-
-### Supporting Libraries
-- **pdf2image** - แปลง PDF เป็นรูปภาพสำหรับ OCR
-- **pypdf** - อ่านและจัดการไฟล์ PDF
-- **pydub** - ประมวลผลไฟล์เสียง
-- **FFmpeg** - แปลงและเพิ่มประสิทธิภาพไฟล์เสียง
-- **slowapi** - Rate limiting middleware
-- **langsmith** - Observability สำหรับ LLM calls
-
-### Deployment & Infrastructure
-- **Docker & Docker Compose** - Containerization
-- **Nginx** - Reverse proxy และ load balancer
-- **DigitalOcean App Platform** - Production deployment platform
-
-## สถาปัตยกรรมระบบ
-
-### Clean Architecture Layers
+## สถาปัตยกรรมโดยย่อ
 
 ```
-┌─────────────────────────────────────────┐
-│         API Layer (Routers)             │
-│  - ocr.py, sheets.py, audio.py, chat.py │
-└────────────────┬────────────────────────┘
-                 │
-┌────────────────▼────────────────────────┐
-│       Business Logic (Services)         │
-│  - ocr_service, chat_service,           │
-│    audio_processor, summary_service     │
-└────────────────┬────────────────────────┘
-                 │
-┌────────────────▼────────────────────────┐
-│      Data Access Layer (Models)         │
-│  - SQLAlchemy Models + Repositories     │
-└────────────────┬────────────────────────┘
-                 │
-┌────────────────▼────────────────────────┐
-│         Database (SQLite)               │
-│  - analyze_jobs, chat_history,          │
-│    ai_dataset_records                   │
-└─────────────────────────────────────────┘
+Client
+  │
+  ▼
+FastAPI (src/main.py)
+  ├── /ocr          → ocr_service       → Typhoon Vision
+  ├── /sheets       → analysis_service  → Typhoon LLM  →  AnalyzeJob (SQLite)
+  ├── /api/audio    → audio_processor   → Whisper ASR  →  AiDatasetRecord (SQLite)
+  └── /api/chat     → chat_service      → Typhoon LLM + Supabase Vector
 ```
 
-### Data Flow
+**Tech Stack:** Python 3.10 · FastAPI · SQLAlchemy 2.0 (Async, SQLite) · Typhoon LLM · Whisper · Supabase
 
-**1. Document Analysis Pipeline:**
+---
+
+## `sheet_id` — key กลางของระบบ
+
+`sheet_id` คือ ID ของชีทที่มาจาก **Product Service ฝั่ง Frontend** ไม่ใช่ค่าที่ AI Engine สร้างขึ้นเอง
+ฝั่ง Frontend เป็นผู้ generate และส่งมาให้ AI Engine ใช้เป็น key เชื่อมข้อมูลตลอดกระบวนการ
+
+<Aside type="tip" title="ทำไม sheet_id จึงสำคัญ">
+`sheet_id` ทำหน้าที่เป็น **key กลาง** ที่ใช้ได้ในทุกขั้นตอน:
+
+1. **ตอน Analyze** — ส่ง `sheet_id` พร้อม PDF ไปยัง `/sheets/analyze` เพื่อผูก job กับชีทนั้น
+2. **ตอน Poll** — ตรวจสถานะ job ด้วย `GET /sheets/jobs/by-sheet/{sheet_id}` โดยไม่ต้องเก็บ `job_id`
+3. **ตอน Chat** — ส่ง `sheet_id` เดิมไปยัง `/api/chat/` เพื่อให้ AI เข้าถึงเนื้อหาชีทนั้นเป็น RAG context
+</Aside>
+
+**สองโหมดของ RAG Chat ขึ้นอยู่กับ `sheet_id`:**
+
+| `sheet_id` ใน `/api/chat/` | โหมด | บริบท |
+|---|---|---|
+| **ระบุค่า** (ลูกค้าซื้อชีทแล้ว) | 🎓 Tutor Mode | AI เข้าถึงเนื้อหาในชีทนั้น ตอบคำถามอิงเนื้อหาจริง |
+| **`null`** (user อยู่หน้า Home) | 🛍️ Sales Mode | AI ไม่เข้าถึงเนื้อหาใด ทำหน้าที่แนะนำชีทให้ลูกค้าซื้อ |
+
+---
+
+## ตัวอย่าง Workflow
+
+### Workflow 1 — วิเคราะห์ PDF แล้วถาม RAG Chat (กรณีหลัก)
+
+กรณีใช้งานหลัก: ลูกค้าซื้อชีทแล้ว ฝั่ง Frontend ส่งไฟล์มาวิเคราะห์ก่อน จากนั้นลูกค้าสามารถถาม Chatbot เกี่ยวกับเนื้อหาในชีทนั้นได้
+
+<Steps>
+1. **Frontend gen `sheet_id`** จาก Product Service (UUID ของชีทในระบบ)
+2. ส่ง `POST /sheets/analyze` พร้อม PDF + `sheet_id` นั้น → ได้ `job_id` กลับมาทันที
+3. Poll `GET /sheets/jobs/by-sheet/{sheet_id}` จนได้ `status: "completed"`
+4. (ทางเลือก) แสดงผล `result.summary`, `result.assessment`, `result.tags` ให้ผู้ขาย/ผู้ดูแลระบบ
+5. เมื่อลูกค้าเปิด Chat บนหน้าชีทนั้น → ส่ง `POST /api/chat/` พร้อม `sheet_id` เดิม → AI เข้าถึงเนื้อหาได้ทันที
+</Steps>
+
 ```
-PDF Upload → OCR (Typhoon) → Text Extraction → AI Analysis (Typhoon LLM) 
-→ Generate Summary/Tags → Store in DB → (Optional) Webhook Callback
-```
+// 1. Frontend มี sheet_id อยู่แล้ว เช่น "uuid-sheet-abc"
 
-**2. Audio Transcription Pipeline:**
-```
-Audio Upload → FFmpeg Optimization → Chunking (10min segments) 
-→ Whisper ASR → Transcript Assembly → Summarization → Store in DB
-```
+// 2. วิเคราะห์ PDF
+POST /sheets/analyze
+{ file: mypdf.pdf, sheet_id: "uuid-sheet-abc" }
+→ { job_id: "job-123", sheet_id: "uuid-sheet-abc", status: "pending" }
 
-**3. RAG-Enhanced Chat:**
-```
-User Query → Search ai_dataset_records (Keyword + Vector) 
-→ Retrieve Context → Inject into LLM Prompt → Generate Response 
-→ Store Chat History
-```
+// 3. Poll ด้วย sheet_id (ไม่ต้องเก็บ job_id)
+GET /sheets/jobs/by-sheet/uuid-sheet-abc
+→ { status: "completed", result: { summary: "...", assessment: [...], tags: [...] } }
 
-## การติดตั้งและใช้งาน
-
-### ข้อกำหนดเบื้องต้น
-
-- Python 3.10 หรือสูงกว่า
-- Docker และ Docker Compose (สำหรับการ Deploy แบบ Container)
-- FFmpeg (สำหรับการประมวลผลเสียง)
-
-### ตัวแปร Environment Variables
-
-สร้างไฟล์ `.env` ที่ root directory ของโครงการ:
-
-```bash
-# Application Environment
-APP_ENV=development
-
-# Typhoon AI API
-TYPHOON_API_KEY=your_typhoon_api_key_here
-TYPHOON_BASE_URL=https://api.opentyphoon.ai/v1
-
-# Google Gemini (สำหรับ Embedding)
-GEMINI_API_KEY=your_gemini_api_key_here
-
-# Supabase (สำหรับ Vector Search)
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_KEY=your_supabase_anon_key
-
-# Database (SQLite)
-SQLITE_DB_PATH=/app/data/jobs.db
-```
-
-### การรันโปรเจค Local
-
-#### วิธีที่ 1: รันด้วย Python โดยตรง
-
-```bash
-# 1. ติดตั้ง Dependencies
-pip install -r requirements.txt
-
-# 2. สร้างโฟลเดอร์สำหรับข้อมูล
-mkdir -p data temp_audio
-
-# 3. รัน FastAPI Server
-uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+// 4. ลูกค้าถาม Chatbot (Tutor Mode)
+POST /api/chat/
+{ session_id: "s1", message: "เนื้อหาเน้นเรื่องอะไร", sheet_id: "uuid-sheet-abc" }
+→ { message: "ชีทนี้เน้นเรื่อง..." }
 ```
 
-เข้าถึง API ได้ที่: `http://localhost:8000`
+### Workflow 2 — RAG Chat หน้า Home (Sales Mode)
 
-เข้าถึง API Documentation ได้ที่: `http://localhost:8000/docs`
+กรณี user เปิด Chatbot บนหน้า Home ยังไม่ได้เลือกหรือซื้อชีทใด
 
-#### วิธีที่ 2: รันด้วย Docker Compose (แนะนำ)
-
-```bash
-# 1. Build และรัน Container
-docker-compose up --build
-
-# 2. หยุดการทำงาน
-docker-compose down
+```
+POST /api/chat/
+{ session_id: "s2", message: "มีชีทแคลคูลัสไหม", sheet_id: null }
+→ { message: "มีชีท Calculus 101 ของ... แนะนำให้ลองดูครับ" }
+// AI ทำหน้าที่แนะนำชีท ไม่สามารถเข้าถึงเนื้อหาใด ๆ ได้
 ```
 
-ระบบจะรันบน **port 80** ผ่าน Nginx reverse proxy
+### Workflow 3 — ถอดเสียงบรรยาย
 
-### โครงสร้างฐานข้อมูล
+<Steps>
+1. ส่ง `POST /api/audio/transcribe` พร้อมไฟล์เสียง → ได้ `job_id`
+2. Poll `GET /sheets/jobs/{job_id}` จนได้ `status: "completed"`
+3. อ่าน `result.summary` และ `result.raw_text_snippet`
+</Steps>
 
-ระบบใช้ SQLite พร้อมตาราง 3 ตาราง:
-
-**1. analyze_jobs** - ติดตามสถานะของงาน document analysis
 ```
-- id (UUID, PK)
-- sheet_id (String, Indexed)
-- status (pending/processing/completed/failed)
-- result (JSON)
-- error_message (String)
-- webhook_url (String)
-- created_at (DateTime)
-```
+POST /api/audio/transcribe   (file=lecture.mp3)
+→ { job_id: "def-456", status: "processing" }
 
-**2. chat_history** - เก็บประวัติการสนทนา
-```
-- id (Auto-increment, PK)
-- session_id (String, Indexed)
-- role (user/assistant)
-- content (Text)
-- sheet_id (String, nullable)
-- timestamp (DateTime)
+GET /sheets/jobs/def-456
+→ { result: { dataset_id: 42, summary: "...", raw_text_snippet: "..." } }
 ```
 
-**3. ai_dataset_records** - เก็บเอกสารและเสียงที่ประมวลผลแล้วสำหรับ RAG
-```
-- id (Auto-increment, PK)
-- filename (String)
-- source_type (sheet/audio)
-- raw_text (Text)
-- summary_text (Text)
-- tags (String)
-- created_at (DateTime)
-```
+---
 
-## คุณสมบัติสำคัญ
+## Database Schema (AI Engine)
 
-### 1. Async & Concurrent Processing
-- ใช้ `asyncio` และ `aiosqlite` เพื่อ non-blocking I/O
-- ประมวลผลหลายหน้าของ PDF พร้อมกัน (Semaphore-controlled)
-- Chunking เสียงแบบ parallel transcription
+AI Engine ใช้ **SQLite แบบ embedded** (ไม่ใช่ PostgreSQL ของ service อื่นในระบบ)
+ไฟล์ DB อยู่ที่ `./data/jobs.db`
 
-### 2. Background Job Processing
-- ใช้ FastAPI `BackgroundTasks` สำหรับงานที่ใช้เวลานาน
-- Job tracking ด้วย UUID สำหรับ polling status
-- Webhook callback เมื่องานเสร็จสิ้น
+### `analyze_jobs`
 
-### 3. Rate Limiting
-- จำกัด request ด้วย `slowapi`
-- ตัวอย่าง: Chat endpoint จำกัดไว้ที่ 10 requests/minute
+เก็บ job ของการวิเคราะห์ PDF และถอดเสียง
 
-### 4. Security Features
-- Content validation (junk filter)
-- File hash watermarking
-- Size limit enforcement
+| Column | Type | คำอธิบาย |
+|---|---|---|
+| `id` | `UUID` (PK) | job ID ที่ระบบสร้างอัตโนมัติ |
+| `sheet_id` | `string` (nullable) | **sheet ID จาก Product Service ฝั่ง Frontend** — key กลางสำหรับ poll และ RAG Chat |
+| `status` | `string` | `pending` / `processing` / `completed` / `failed` |
+| `result` | `JSON` (nullable) | ผลวิเคราะห์ทั้งหมด |
+| `error_message` | `string` (nullable) | รายละเอียดข้อผิดพลาด (มีเฉพาะเมื่อ `failed`) |
+| `webhook_url` | `string` (nullable) | URL สำหรับ webhook callback |
+| `created_at` | `datetime` | เวลาที่สร้าง job |
 
-### 5. Production-Ready Deployment
-- Multi-worker Uvicorn (4 workers)
-- Nginx reverse proxy
-- Volume persistence สำหรับ SQLite
-- Health check endpoint
+### `ai_dataset_records`
 
-## สถานะการพัฒนา
+เก็บเนื้อหาชีทที่ผ่านการวิเคราะห์หรือถอดเสียงแล้ว ใช้เป็น RAG source สำหรับ `/api/chat/`
 
-ปัจจุบันโครงการอยู่ในระยะ **Development Phase** โดยใช้ SQLite database และ mock data สำหรับการทดสอบ ระบบพร้อมสำหรับการ deploy ไปยัง production environment ผ่าน DigitalOcean App Platform หรือ Docker Swarm/Kubernetes
+| Column | Type | คำอธิบาย |
+|---|---|---|
+| `id` | `integer` (PK, autoincrement) | primary key ภายใน AI Engine |
+| `filename` | `string` | ชื่อไฟล์ต้นทาง |
+| `source_type` | `string` | `audio` หรือ `pdf` |
+| `raw_text` | `text` (nullable) | transcript เต็มรูปแบบ |
+| `summary_text` | `text` (nullable) | บทสรุปที่ AI สร้างขึ้น |
+| `created_at` | `datetime` | เวลาที่บันทึก |
 
-## การติดต่อและสนับสนุน
+### `chat_history`
 
-สำหรับคำถามหรือปัญหาในการใช้งาน กรุณาติดต่อทีมพัฒนาผ่าน repository issues หรือดูเอกสารเพิ่มเติมได้ที่ `/docs`
+เก็บ conversation history แยกตาม `session_id` (ดึงล่าสุด 20 ข้อความ)
+
+| Column | Type | คำอธิบาย |
+|---|---|---|
+| `session_id` | `string` | ID ของ session สนทนา |
+| `sheet_id` | `string` (nullable) | sheet ที่เชื่อมกับ session นี้ |
+| `role` | `string` | `user` หรือ `assistant` |
+| `content` | `text` | เนื้อหาข้อความ |
+| `created_at` | `datetime` | เวลาที่บันทึก |
+
+---
+
+## MCP Tools (ai_engine_mcp.py)
+
+สำหรับการใช้งานผ่าน Model Context Protocol (เช่น VS Code Copilot Agent)
+ทุก tool poll จนงานเสร็จโดยอัตโนมัติ ไม่ต้องรอด้วยตัวเอง
+
+| Tool | เรียก Endpoint | คำอธิบาย |
+|---|---|---|
+| `extract_text_ocr` | `POST /ocr/extract` | แยกข้อความจาก PDF (sync) |
+| `analyze_sheet` | `POST /sheets/analyze` | วิเคราะห์ PDF แบบ async (poll จนเสร็จ) |
+| `get_job_status` | `GET /sheets/jobs/{job_id}` | ดูสถานะ job ด้วย job_id |
+| `get_job_by_sheet_id` | `GET /sheets/jobs/by-sheet/{sheet_id}` | ดูสถานะ job ด้วย sheet tag |
+| `transcribe_audio` | `POST /api/audio/transcribe` | ถอดเสียงแบบ async (poll จนเสร็จ) |
+| `chat_with_rag` | `POST /api/chat/` | สนทนากับ AI (+ RAG ถ้ามี `sheet_id`) |
