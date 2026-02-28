@@ -3,9 +3,15 @@ import uuid
 import shutil
 import asyncio
 import subprocess
+from typing import List
+
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.database import get_async_session, AnalyzeJob
+
+from src.core.auth import CurrentUser, get_current_user
+from src.database import AnalyzeJob, get_async_session
+from src.schemas.audio import AudioHistoryItem
 from src.services.audio_processor import process_audio_job
 
 router = APIRouter(
@@ -49,7 +55,8 @@ async def convert_to_optimized_mp3(input_path: str) -> str:
 async def transcribe_audio_background(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    session: AsyncSession = Depends(get_async_session)
+    session: AsyncSession = Depends(get_async_session),
+    current_user: CurrentUser = Depends(get_current_user),
 ):
     """
     Upload an audio file (mp3/wav) for background processing.
@@ -64,7 +71,14 @@ async def transcribe_audio_background(
     # 2. Create Job
     job_id = uuid.uuid4()
     # User requested status="processing" immediately
-    job = AnalyzeJob(id=job_id, status="processing", result={})
+    job = AnalyzeJob(
+        id=job_id,
+        status="processing",
+        result={},
+        user_id=current_user.id,
+        filename=file.filename,
+        source_type="audio",
+    )
     session.add(job)
     await session.commit()
     
@@ -108,3 +122,34 @@ async def transcribe_audio_background(
         if os.path.exists(file_path):
             os.remove(file_path)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/history", response_model=List[AudioHistoryItem])
+async def get_audio_history(
+    session: AsyncSession = Depends(get_async_session),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> List[AudioHistoryItem]:
+    """
+    Return all audio transcription jobs belonging to the authenticated user,
+    ordered by creation time (newest first).
+    """
+    stmt = (
+        select(AnalyzeJob)
+        .where(
+            AnalyzeJob.user_id == current_user.id,
+            AnalyzeJob.source_type == "audio",
+        )
+        .order_by(AnalyzeJob.created_at.desc())
+    )
+    result = await session.execute(stmt)
+    jobs = result.scalars().all()
+
+    return [
+        AudioHistoryItem(
+            job_id=job.id,
+            filename=job.filename,
+            status=job.status,
+            created_at=job.created_at,
+        )
+        for job in jobs
+    ]

@@ -15,6 +15,8 @@ class Settings:
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     # SQLite path — must match the Docker volume mount target in docker-compose.yml
     SQLITE_DB_PATH: str = os.getenv("SQLITE_DB_PATH", "/app/data/jobs.db")
+    JWT_SECRET: str = os.getenv("JWT_SECRET", "changeme")
+    JWT_ALGORITHM: str = os.getenv("JWT_ALGORITHM", "HS256")
 
 
 settings = Settings()

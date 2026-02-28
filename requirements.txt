@@ -39,3 +39,4 @@ slowapi
 langsmith
 supabase
 google-genai
+PyJWT>=2.8.0
