@@ -21,23 +21,28 @@ def save_file_sync(file_obj, dest_path):
     with open(dest_path, "wb") as buffer:
         shutil.copyfileobj(file_obj, buffer)
 
-def convert_to_optimized_mp3(input_path: str) -> str:
+async def convert_to_optimized_mp3(input_path: str) -> str:
     """
     Convert audio to optimized mono 64k mp3 using ffmpeg via subprocess.
     """
     output_path = f"/tmp/{uuid.uuid4().hex}.mp3"
-    command = [
-        "ffmpeg", "-y", "-i", input_path, 
-        "-ac", "1", "-b:a", "64k", output_path
-    ]
     
-    try:
-        # Run ffmpeg, capture output to avoid hanging
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
-        return output_path
-    except subprocess.CalledProcessError as e:
-        print(f"FFmpeg failed. Stderr: {e.stderr}")
+    # Run ffmpeg asynchronously
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-i", input_path, 
+        "-ac", "1", "-b:a", "64k", output_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    
+    stdout, stderr = await process.communicate()
+    
+    if process.returncode != 0:
+        error_msg = stderr.decode()
+        print(f"FFmpeg Error: {error_msg}")
         raise HTTPException(status_code=500, detail="Audio conversion failed.")
+        
+    return output_path
 
 
 @router.post("/transcribe")
@@ -72,10 +77,8 @@ async def transcribe_audio_background(
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, save_file_sync, file.file, file_path)
             
-        # Convert to optimized MP3 (blocking subprocess, run in thread)
-        optimized_path = await loop.run_in_executor(
-            None, convert_to_optimized_mp3, file_path
-        )
+        # Convert to optimized MP3 (asynchronous subprocess)
+        optimized_path = await convert_to_optimized_mp3(file_path)
         
         # 4. Dispatch Background Task with the OPTIMIZED path
         # Note: audio_processor needs to clean up the optimized_path
