@@ -1,0 +1,227 @@
+---
+title: Project Overview
+description: High-level architecture and features.
+---
+
+# ภาพรวมโครงการ AI Engine
+
+## บทนำ
+
+**AI Engine** (aitigravity) เป็น Microservice ที่พัฒนาด้วย FastAPI สำหรับการประมวลผลเอกสารและข้อมูลมัลติมีเดียด้วยเทคโนโลยี AI ระบบนี้ออกแบบมาเพื่อรองรับการทำงานแบบ Asynchronous ที่มีประสิทธิภาพสูง โดยให้บริการหลักทั้ง 4 ด้าน ได้แก่ **การแปลงข้อความจากเอกสาร PDF** ด้วย OCR, **การวิเคราะห์เนื้อหาเอกสารด้วย AI**, **การถอดเสียงจากไฟล์เสียง**, และ **ระบบแชทบอทอัจฉริยะ** ที่รองรับการค้นหาข้อมูลจากฐานข้อมูลแบบ RAG (Retrieval-Augmented Generation)
+
+ระบบนี้ถูกออกแบบให้ทำงานในรูปแบบ Clean Architecture โดยแยกชั้นการทำงานออกเป็น Routers, Services, และ Repository Layers เพื่อความยืดหยุ่นและง่ายต่อการบำรุงรักษา
+
+## เทคโนโลยีหลักที่ใช้
+
+### Backend Framework
+- **Python 3.10+** - ภาษาโปรแกรมหลัก
+- **FastAPI 0.128.3** - Web Framework สำหรับ API ที่รวดเร็วและ type-safe
+- **Pydantic V2** - Data validation และ serialization
+- **Uvicorn** - ASGI server สำหรับการรัน FastAPI
+
+### Database & ORM
+- **SQLAlchemy 2.0** - ORM แบบ Async สำหรับจัดการฐานข้อมูล
+- **SQLite 3** (aiosqlite) - ฐานข้อมูลหลักสำหรับ job tracking และ chat history
+- **Supabase** - Vector database สำหรับ semantic search (RAG)
+
+### AI & ML Services
+- **Typhoon OCR (v0.4.1)** - OCR engine สำหรับการแปลงข้อความจาก PDF
+- **Typhoon AI API** - LLM สำหรับการวิเคราะห์และสรุปเนื้อหา
+- **OpenAI-compatible API** - ใช้สำหรับ chat และ completion
+- **Google Gemini API** - Text embedding สำหรับ vector search
+- **OpenAI Whisper** (ผ่าน Typhoon) - ASR (Automatic Speech Recognition)
+
+### Supporting Libraries
+- **pdf2image** - แปลง PDF เป็นรูปภาพสำหรับ OCR
+- **pypdf** - อ่านและจัดการไฟล์ PDF
+- **pydub** - ประมวลผลไฟล์เสียง
+- **FFmpeg** - แปลงและเพิ่มประสิทธิภาพไฟล์เสียง
+- **slowapi** - Rate limiting middleware
+- **langsmith** - Observability สำหรับ LLM calls
+
+### Deployment & Infrastructure
+- **Docker & Docker Compose** - Containerization
+- **Nginx** - Reverse proxy และ load balancer
+- **DigitalOcean App Platform** - Production deployment platform
+
+## สถาปัตยกรรมระบบ
+
+### Clean Architecture Layers
+
+```
+┌─────────────────────────────────────────┐
+│         API Layer (Routers)             │
+│  - ocr.py, sheets.py, audio.py, chat.py │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│       Business Logic (Services)         │
+│  - ocr_service, chat_service,           │
+│    audio_processor, summary_service     │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│      Data Access Layer (Models)         │
+│  - SQLAlchemy Models + Repositories     │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│         Database (SQLite)               │
+│  - analyze_jobs, chat_history,          │
+│    ai_dataset_records                   │
+└─────────────────────────────────────────┘
+```
+
+### Data Flow
+
+**1. Document Analysis Pipeline:**
+```
+PDF Upload → OCR (Typhoon) → Text Extraction → AI Analysis (Typhoon LLM) 
+→ Generate Summary/Tags → Store in DB → (Optional) Webhook Callback
+```
+
+**2. Audio Transcription Pipeline:**
+```
+Audio Upload → FFmpeg Optimization → Chunking (10min segments) 
+→ Whisper ASR → Transcript Assembly → Summarization → Store in DB
+```
+
+**3. RAG-Enhanced Chat:**
+```
+User Query → Search ai_dataset_records (Keyword + Vector) 
+→ Retrieve Context → Inject into LLM Prompt → Generate Response 
+→ Store Chat History
+```
+
+## การติดตั้งและใช้งาน
+
+### ข้อกำหนดเบื้องต้น
+
+- Python 3.10 หรือสูงกว่า
+- Docker และ Docker Compose (สำหรับการ Deploy แบบ Container)
+- FFmpeg (สำหรับการประมวลผลเสียง)
+
+### ตัวแปร Environment Variables
+
+สร้างไฟล์ `.env` ที่ root directory ของโครงการ:
+
+```bash
+# Application Environment
+APP_ENV=development
+
+# Typhoon AI API
+TYPHOON_API_KEY=your_typhoon_api_key_here
+TYPHOON_BASE_URL=https://api.opentyphoon.ai/v1
+
+# Google Gemini (สำหรับ Embedding)
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Supabase (สำหรับ Vector Search)
+SUPABASE_URL=your_supabase_project_url
+SUPABASE_KEY=your_supabase_anon_key
+
+# Database (SQLite)
+SQLITE_DB_PATH=/app/data/jobs.db
+```
+
+### การรันโปรเจค Local
+
+#### วิธีที่ 1: รันด้วย Python โดยตรง
+
+```bash
+# 1. ติดตั้ง Dependencies
+pip install -r requirements.txt
+
+# 2. สร้างโฟลเดอร์สำหรับข้อมูล
+mkdir -p data temp_audio
+
+# 3. รัน FastAPI Server
+uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+เข้าถึง API ได้ที่: `http://localhost:8000`
+
+เข้าถึง API Documentation ได้ที่: `http://localhost:8000/docs`
+
+#### วิธีที่ 2: รันด้วย Docker Compose (แนะนำ)
+
+```bash
+# 1. Build และรัน Container
+docker-compose up --build
+
+# 2. หยุดการทำงาน
+docker-compose down
+```
+
+ระบบจะรันบน **port 80** ผ่าน Nginx reverse proxy
+
+### โครงสร้างฐานข้อมูล
+
+ระบบใช้ SQLite พร้อมตาราง 3 ตาราง:
+
+**1. analyze_jobs** - ติดตามสถานะของงาน document analysis
+```
+- id (UUID, PK)
+- sheet_id (String, Indexed)
+- status (pending/processing/completed/failed)
+- result (JSON)
+- error_message (String)
+- webhook_url (String)
+- created_at (DateTime)
+```
+
+**2. chat_history** - เก็บประวัติการสนทนา
+```
+- id (Auto-increment, PK)
+- session_id (String, Indexed)
+- role (user/assistant)
+- content (Text)
+- sheet_id (String, nullable)
+- timestamp (DateTime)
+```
+
+**3. ai_dataset_records** - เก็บเอกสารและเสียงที่ประมวลผลแล้วสำหรับ RAG
+```
+- id (Auto-increment, PK)
+- filename (String)
+- source_type (sheet/audio)
+- raw_text (Text)
+- summary_text (Text)
+- tags (String)
+- created_at (DateTime)
+```
+
+## คุณสมบัติสำคัญ
+
+### 1. Async & Concurrent Processing
+- ใช้ `asyncio` และ `aiosqlite` เพื่อ non-blocking I/O
+- ประมวลผลหลายหน้าของ PDF พร้อมกัน (Semaphore-controlled)
+- Chunking เสียงแบบ parallel transcription
+
+### 2. Background Job Processing
+- ใช้ FastAPI `BackgroundTasks` สำหรับงานที่ใช้เวลานาน
+- Job tracking ด้วย UUID สำหรับ polling status
+- Webhook callback เมื่องานเสร็จสิ้น
+
+### 3. Rate Limiting
+- จำกัด request ด้วย `slowapi`
+- ตัวอย่าง: Chat endpoint จำกัดไว้ที่ 10 requests/minute
+
+### 4. Security Features
+- Content validation (junk filter)
+- File hash watermarking
+- Size limit enforcement
+
+### 5. Production-Ready Deployment
+- Multi-worker Uvicorn (4 workers)
+- Nginx reverse proxy
+- Volume persistence สำหรับ SQLite
+- Health check endpoint
+
+## สถานะการพัฒนา
+
+ปัจจุบันโครงการอยู่ในระยะ **Development Phase** โดยใช้ SQLite database และ mock data สำหรับการทดสอบ ระบบพร้อมสำหรับการ deploy ไปยัง production environment ผ่าน DigitalOcean App Platform หรือ Docker Swarm/Kubernetes
+
+## การติดต่อและสนับสนุน
+
+สำหรับคำถามหรือปัญหาในการใช้งาน กรุณาติดต่อทีมพัฒนาผ่าน repository issues หรือดูเอกสารเพิ่มเติมได้ที่ `/docs`

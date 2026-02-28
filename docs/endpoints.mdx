@@ -1,0 +1,620 @@
+---
+title: API Reference
+description: Available endpoints and usage.
+---
+
+# API Reference
+
+เอกสารอ้างอิงสำหรับ API Endpoints ทั้งหมดของ AI Engine Microservice
+
+## Base URL
+
+```
+Development: http://localhost:8000
+Production: https://your-domain.com
+```
+
+## สารบัญ
+
+- [Health Check](#health-check)
+- [OCR Service](#ocr-service)
+- [Sheets Analysis](#sheets-analysis)
+- [Audio Transcription](#audio-transcription)
+- [Chat Service](#chat-service)
+
+---
+
+## Health Check
+
+### GET `/`
+
+ตรวจสอบสถานะของ API service
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "env": "development"
+}
+```
+
+**Status Codes:**
+- `200 OK` - Service working normally
+
+---
+
+## OCR Service
+
+### POST `/ocr/extract`
+
+แยกข้อความจากไฟล์ PDF โดยใช้ Typhoon OCR
+
+**Tags:** `OCR`
+
+**Request:**
+
+Content-Type: `multipart/form-data`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file` | File | ✅ | ไฟล์ PDF ที่ต้องการแปลงเป็นข้อความ |
+
+**cURL Example:**
+
+```bash
+curl -X POST "http://localhost:8000/ocr/extract" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@document.pdf"
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "text": "ข้อความที่ OCR แยกได้จากเอกสาร PDF ทั้งหมด..."
+}
+```
+
+**Error Responses:**
+
+```json
+// 400 Bad Request
+{
+  "detail": "File must be a PDF"
+}
+
+// 500 Internal Server Error
+{
+  "detail": "Error message details"
+}
+```
+
+**Status Codes:**
+- `200 OK` - สำเร็จ
+- `400 Bad Request` - ไฟล์ไม่ใช่ PDF
+- `500 Internal Server Error` - เกิดข้อผิดพลาดในการประมวลผล
+
+---
+
+## Sheets Analysis
+
+### POST `/sheets/analyze`
+
+วิเคราะห์เอกสาร PDF ด้วย AI แบบ Asynchronous (Background Processing) รองรับการอัปโหลดไฟล์หรือส่ง URL
+
+**Tags:** `Sheets`
+
+**Request:**
+
+Content-Type: `multipart/form-data`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file` | File | ❌* | ไฟล์ PDF ที่ต้องการวิเคราะห์ |
+| `file_url` | String | ❌* | URL ของไฟล์ PDF |
+| `webhook_url` | String | ❌ | URL สำหรับรับ callback เมื่อประมวลผลเสร็จ |
+| `sheet_id` | String | ❌ | ID ของ sheet สำหรับการอ้างอิง |
+
+*หมายเหตุ:* ต้องระบุอย่างน้อย 1 ใน 2 (`file` หรือ `file_url`)
+
+**cURL Example:**
+
+```bash
+# อัปโหลดไฟล์โดยตรง
+curl -X POST "http://localhost:8000/sheets/analyze" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@mysheet.pdf" \
+  -F "sheet_id=SHEET001" \
+  -F "webhook_url=https://myapp.com/webhook"
+
+# หรือส่ง URL
+curl -X POST "http://localhost:8000/sheets/analyze" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file_url=https://example.com/document.pdf" \
+  -F "sheet_id=SHEET001"
+```
+
+**Response (202 Accepted):**
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "sheet_id": "SHEET001",
+  "status": "pending",
+  "message": "Job accepted. Processing in background."
+}
+```
+
+**Processing Pipeline:**
+1. OCR extraction (Typhoon OCR, limit 50 pages)
+2. AI Analysis (สรุปเนื้อหา, ประเมินคุณภาพ, สร้างแท็ก)
+3. Watermarking (MD5 hash)
+4. บันทึกลง Database (ai_dataset_records)
+5. Callback ไปที่ webhook_url (ถ้ามี)
+
+**Status Codes:**
+- `202 Accepted` - งานถูกรับเข้าคิวประมวลผลแล้ว
+- `400 Bad Request` - ข้อมูล input ไม่ถูกต้อง
+- `500 Internal Server Error` - เกิดข้อผิดพลาด
+
+---
+
+### GET `/sheets/jobs/{job_id}`
+
+ตรวจสอบสถานะของงานจาก job_id
+
+**Tags:** `Sheets`
+
+**Path Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `job_id` | UUID | ✅ | Job ID ที่ได้จากการเรียก `/sheets/analyze` |
+
+**cURL Example:**
+
+```bash
+curl -X GET "http://localhost:8000/sheets/jobs/550e8400-e29b-41d4-a716-446655440000"
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "completed",
+  "result": {
+    "filename": "async_job",
+    "ocr_content": "เนื้อหาที่ OCR แยกได้ทั้งหมด...",
+    "summary": "บทสรุป: เอกสารนี้เกี่ยวกับ...\n\n(Verified by AI - Ref: a1b2c3d4)",
+    "assessment": [
+      "เนื้อหามีความละเอียดครบถ้วน",
+      "ตัวอย่างชัดเจนและเข้าใจง่าย",
+      "เหมาะสำหรับผู้เรียนระดับกลาง"
+    ],
+    "tags": [
+      "#คณิตศาสตร์",
+      "#แคลคูลัส",
+      "#อนุพันธ์"
+    ],
+    "page_count": 15
+  },
+  "error_message": null,
+  "created_at": "2026-02-27T10:30:00"
+}
+```
+
+**Response (Processing):**
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "processing",
+  "result": null,
+  "error_message": null,
+  "created_at": "2026-02-27T10:30:00"
+}
+```
+
+**Response (Failed):**
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "failed",
+  "result": null,
+  "error_message": "Invalid or unreadable content (Junk Filter)",
+  "created_at": "2026-02-27T10:30:00"
+}
+```
+
+**Status Codes:**
+- `200 OK` - พบข้อมูล
+- `404 Not Found` - ไม่พบ job_id
+
+---
+
+### GET `/sheets/jobs/by-sheet/{sheet_id}`
+
+ค้นหางานล่าสุดที่เชื่อมโยงกับ sheet_id
+
+**Tags:** `Sheets`
+
+**Path Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sheet_id` | String | ✅ | Sheet ID ที่ต้องการค้นหา |
+
+**cURL Example:**
+
+```bash
+curl -X GET "http://localhost:8000/sheets/jobs/by-sheet/SHEET001"
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "sheet_id": "SHEET001",
+  "status": "completed",
+  "result": { /* ผลลัพธ์เต็ม */ },
+  "error_message": null,
+  "created_at": "2026-02-27T10:30:00"
+}
+```
+
+**Status Codes:**
+- `200 OK` - พบข้อมูล
+- `404 Not Found` - ไม่พบ sheet_id ที่ระบุ
+
+---
+
+## Audio Transcription
+
+### POST `/api/audio/transcribe`
+
+ถอดเสียงจากไฟล์เสียงเป็นข้อความ แล้วสรุปด้วย AI (Background Processing)
+
+**Tags:** `Audio`
+
+**Request:**
+
+Content-Type: `multipart/form-data`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file` | File | ✅ | ไฟล์เสียง (รองรับ: .mp3, .wav, .m4a, .ogg, .flac) |
+
+**Processing Steps:**
+1. แปลงเป็น optimized MP3 (mono, 64kbps) ด้วย FFmpeg
+2. แบ่งออกเป็น chunks ละ 10 นาที
+3. ถอดเสียงทีละ chunk ด้วย Whisper ASR
+4. รวมข้อความและสรุปด้วย Typhoon LLM
+5. บันทึกลง ai_dataset_records
+
+**cURL Example:**
+
+```bash
+curl -X POST "http://localhost:8000/api/audio/transcribe" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@lecture.mp3"
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "job_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "status": "processing"
+}
+```
+
+**ตรวจสอบผลลัพธ์:**
+
+ใช้ `/sheets/jobs/{job_id}` เพื่อดูผลลัพธ์ที่สมบูรณ์:
+
+```json
+{
+  "job_id": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "status": "completed",
+  "result": {
+    "transcript": "สวัสดีครับ วันนี้เราจะมาเรียนเรื่อง...",
+    "summary": "บรรยายเกี่ยวกับ...สรุปคือ...",
+    "filename": "lecture.mp3"
+  }
+}
+```
+
+**Status Codes:**
+- `200 OK` - งานถูกรับเข้าคิว
+- `400 Bad Request` - รูปแบบไฟล์ไม่รองรับ
+- `500 Internal Server Error` - เกิดข้อผิดพลาด
+
+**Supported Audio Formats:**
+- MP3 (.mp3)
+- WAV (.wav)
+- M4A (.m4a)
+- OGG (.ogg)
+- FLAC (.flac)
+
+---
+
+## Chat Service
+
+### POST `/api/chat/`
+
+ระบบแชทบอทพร้อม RAG (Retrieval-Augmented Generation) สำหรับตอบคำถามโดยอิงจากเอกสารที่วิเคราะห์ไว้แล้ว
+
+**Tags:** `Chat`
+
+**Rate Limit:** 10 requests/minute
+
+**Request:**
+
+Content-Type: `application/json`
+
+```json
+{
+  "session_id": "user123_session1",
+  "message": "อธิบายแนวคิดของอนุพันธ์หน่อย",
+  "sheet_id": "SHEET001"
+}
+```
+
+**Request Body Schema:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `session_id` | String | ✅ | Session ID สำหรับติดตาม conversation history |
+| `message` | String | ✅ | ข้อความจากผู้ใช้ |
+| `sheet_id` | String | ❌ | Sheet ID สำหรับดึงบริบทเฉพาะ (Optional) |
+
+**Processing Flow:**
+
+1. **ดึง Chat History** - ดึงข้อความย้อนหลัง 10 ข้อความ
+2. **RAG Context Injection:**
+   - ถ้าระบุ `sheet_id` → ดึงเนื้อหาจาก sheet นั้นโดยเฉพาะ
+   - ถ้าไม่ระบุ → ค้นหาเอกสารที่เกี่ยวข้องด้วย keyword + vector search
+3. **LLM Generation** - ส่งบริบท + ประวัติ + คำถามไปยัง Typhoon LLM
+4. **บันทึก History** - เก็บคำถามและคำตอบลง database
+
+**cURL Example:**
+
+```bash
+curl -X POST "http://localhost:8000/api/chat/" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "user123_session1",
+    "message": "มีชีทเกี่ยวกับคณิตศาสตร์ไหม",
+    "sheet_id": null
+  }'
+```
+
+**Response (200 OK):**
+
+```json
+{
+  "response": "พบชีทเกี่ยวกับคณิตศาสตร์ 3 ชีท ได้แก่:\n1. แคลคูลัส 101 - เนื้อหาครอบคลุมอนุพันธ์และปริพันธ์\n2. พีชคณิตเชิงเส้น - เมทริกซ์และระบบสมการ\n3. สถิติเบื้องต้น - ความน่าจะเป็นและการแจกแจง",
+  "context_used": [
+    {
+      "filename": "calculus101.pdf",
+      "summary": "เนื้อหาครอบคลุมการหาอนุพันธ์...",
+      "tags": "#คณิตศาสตร์, #แคลคูลัส"
+    }
+  ]
+}
+```
+
+**Response (With sheet_id specified):**
+
+```json
+{
+  "response": "อนุพันธ์คือ อัตราการเปลี่ยนแปลงของฟังก์ชันที่จุดใดจุดหนึ่ง สามารถมองเป็นความชันของเส้นสัมผัส ณ จุดนั้นๆ บนกราฟ...",
+  "context_used": [
+    {
+      "filename": "SHEET001",
+      "summary": "บทเรียนเรื่องแคลคูลัส...",
+      "tags": "#แคลคูลัส, #อนุพันธ์"
+    }
+  ]
+}
+```
+
+**Error Response (Rate Limit):**
+
+```json
+{
+  "detail": "Rate limit exceeded: 10 per minute"
+}
+```
+
+**Status Codes:**
+- `200 OK` - สำเร็จ
+- `429 Too Many Requests` - เกิน rate limit
+- `500 Internal Server Error` - เกิดข้อผิดพลาด
+
+**Features:**
+
+✅ **Conversation Memory** - จดจำบทสนทนาย้อนหลัง
+
+✅ **Context-Aware** - ตอบโจทย์ตามเอกสารที่เกี่ยวข้อง
+
+✅ **Keyword Filtering** - กรองคำไทยและอังกฤษที่ไม่สำคัญออกก่อนค้นหา (stop words)
+
+✅ **Hybrid Search** - รวม keyword search และ vector search
+
+---
+
+## Error Handling
+
+### Standard Error Response Format
+
+```json
+{
+  "detail": "Error description message"
+}
+```
+
+### Common HTTP Status Codes
+
+| Code | Meaning | Description |
+|------|---------|-------------|
+| `200` | OK | Request สำเร็จ |
+| `202` | Accepted | งานถูกรับเข้าคิวประมวลผล |
+| `400` | Bad Request | ข้อมูล request ไม่ถูกต้อง |
+| `404` | Not Found | ไม่พบ resource ที่ต้องการ |
+| `429` | Too Many Requests | เกิน rate limit |
+| `500` | Internal Server Error | เกิดข้อผิดพลาดในระบบ |
+
+---
+
+## Webhook Callback Format
+
+เมื่อ job เสร็จสมบูรณ์ ระบบจะส่ง POST request ไปยัง `webhook_url` ที่ระบุ:
+
+**Webhook Payload:**
+
+```json
+{
+  "filename": "async_job",
+  "ocr_content": "ข้อความ OCR ทั้งหมด...",
+  "summary": "บทสรุป...",
+  "assessment": [
+    "ข้อประเมินที่ 1",
+    "ข้อประเมินที่ 2"
+  ],
+  "tags": [
+    "#tag1",
+    "#tag2"
+  ],
+  "page_count": 15
+}
+```
+
+**Retry Logic:**
+- ระบบจะ retry 3 ครั้ง ถ้า webhook endpoint ตอบกลับด้วย 5xx
+- หากล้มเหลวทั้งหมด จะบันทึก error log
+
+---
+
+## Interactive API Documentation
+
+เข้าถึง Swagger UI สำหรับทดสอบ API แบบ Interactive:
+
+```
+http://localhost:8000/docs
+```
+
+หรือ ReDoc Documentation:
+
+```
+http://localhost:8000/redoc
+```
+
+---
+
+## Authentication & Security
+
+ปัจจุบัน API ไม่มีการตรวจสอบ Authentication (Development Phase)
+
+**Planned Features:**
+- API Key Authentication
+- JWT Token-based Auth
+- Role-based Access Control (RBAC)
+
+**Current Security Measures:**
+- Rate Limiting (slowapi)
+- File type validation
+- Content junk filtering
+- Hash-based watermarking
+
+---
+
+## Best Practices
+
+### 1. Polling Job Status
+
+สำหรับ Background Jobs (`/sheets/analyze`, `/api/audio/transcribe`):
+
+```python
+import time
+import requests
+
+def wait_for_job(job_id, max_wait=300):
+    start = time.time()
+    while time.time() - start < max_wait:
+        response = requests.get(f"http://localhost:8000/sheets/jobs/{job_id}")
+        data = response.json()
+        
+        if data["status"] == "completed":
+            return data["result"]
+        elif data["status"] == "failed":
+            raise Exception(data["error_message"])
+        
+        time.sleep(5)  # Poll ทุก 5 วินาที
+    
+    raise TimeoutError("Job took too long")
+```
+
+### 2. Chat Session Management
+
+ใช้ `session_id` ที่คงที่สำหรับผู้ใช้เดียวกันเพื่อเก็บประวัติการสนทนา:
+
+```javascript
+const sessionId = `user_${userId}_${Date.now()}`;
+
+async function sendMessage(message, sheetId = null) {
+  const response = await fetch('http://localhost:8000/api/chat/', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      message: message,
+      sheet_id: sheetId
+    })
+  });
+  
+  return await response.json();
+}
+```
+
+### 3. Error Handling
+
+ตรวจสอบ status code และจัดการ errors อย่างเหมาะสม:
+
+```python
+try:
+    response = requests.post(
+        "http://localhost:8000/sheets/analyze",
+        files={"file": open("doc.pdf", "rb")},
+        data={"sheet_id": "SHEET001"}
+    )
+    response.raise_for_status()
+    job_data = response.json()
+    
+except requests.exceptions.HTTPError as e:
+    if e.response.status_code == 400:
+        print("Invalid file or parameters")
+    elif e.response.status_code == 500:
+        print("Server error, please try again later")
+```
+
+---
+
+## Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 1.0.0 | 2026-02-27 | Initial release with OCR, Sheets, Audio, Chat endpoints |
+
+---
+
+## Support & Contact
+
+สำหรับคำถามเพิ่มเติมหรือรายงานปัญหา:
+- **Repository:** https://github.com/HolySheetKuSRC/ai-engine
+- **Documentation:** `/docs` directory
+- **API Docs:** `http://localhost:8000/docs`

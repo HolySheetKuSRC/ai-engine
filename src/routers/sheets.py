@@ -3,6 +3,7 @@ from src.services.analysis_service import analyze_sheet_content
 from src.services.webhook_service import send_webhook
 from src.services.download_service import download_pdf_from_url
 from src.database import get_async_session, AnalyzeJob, async_session_maker
+from src.models.ai_dataset import AiDatasetRecord
 from src.schemas.ai_response import AIAnalysisResult
 import logging
 from fastapi import APIRouter, File, UploadFile, HTTPException, BackgroundTasks, Depends, Form, status
@@ -49,10 +50,15 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
             
             # Security: Watermarking
             summary += f"\n\n(Verified by AI - Ref: {file_hash[:8]})"
-            
+
+            # 3a. Canonical identifier — must be computed BEFORE final_result so it's
+            #     used consistently in both the job result JSON and ai_dataset_records.
+            record_filename: str = job.sheet_id if job.sheet_id else str(job_id)
+            tags_str: str = ", ".join(ai_data.get("tags", []))
+
             # Construct Result
             final_result = {
-                "filename": "async_job", # We might want to pass filename too, but for now simple
+                "filename": record_filename,  # was "async_job" — now the real sheet/job ID
                 "ocr_content": ocr_text,
                 "summary": summary,
                 "assessment": ai_data.get("assessment", []),
@@ -61,12 +67,35 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
             }
             
             # 3. Update DB (Success)
-            # Re-fetch job to avoid detached instance issues if session closed/re-opened? 
-            # We are in same session.
             job.status = "completed"
             job.result = final_result
             await session.commit()
-            
+
+            existing_stmt = select(AiDatasetRecord).where(
+                AiDatasetRecord.filename == record_filename
+            )
+            existing_result = await session.execute(existing_stmt)
+            existing_record = existing_result.scalar_one_or_none()
+
+            if existing_record:
+                # Update in place so chat tutor mode also gets fresh content
+                existing_record.raw_text = ocr_text
+                existing_record.summary_text = summary
+                existing_record.tags = tags_str
+                existing_record.source_type = "sheet"
+            else:
+                dataset_record = AiDatasetRecord(
+                    filename=record_filename,
+                    source_type="sheet",
+                    raw_text=ocr_text,
+                    summary_text=summary,
+                    tags=tags_str,
+                )
+                session.add(dataset_record)
+
+            await session.commit()
+            logger.info(f"Synced '{record_filename}' to ai_dataset_records (tags: {tags_str[:80]})")
+
             # 4. Webhook
             if webhook_url:
                 await send_webhook(webhook_url, final_result)
