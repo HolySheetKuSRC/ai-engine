@@ -50,10 +50,15 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
             
             # Security: Watermarking
             summary += f"\n\n(Verified by AI - Ref: {file_hash[:8]})"
-            
+
+            # 3a. Canonical identifier — must be computed BEFORE final_result so it's
+            #     used consistently in both the job result JSON and ai_dataset_records.
+            record_filename: str = job.sheet_id if job.sheet_id else str(job_id)
+            tags_str: str = ", ".join(ai_data.get("tags", []))
+
             # Construct Result
             final_result = {
-                "filename": "async_job", # We might want to pass filename too, but for now simple
+                "filename": record_filename,  # was "async_job" — now the real sheet/job ID
                 "ocr_content": ocr_text,
                 "summary": summary,
                 "assessment": ai_data.get("assessment", []),
@@ -65,11 +70,6 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
             job.status = "completed"
             job.result = final_result
             await session.commit()
-
-            # 3a. Sync to ai_dataset_records so the Chat service can find this sheet.
-            #     Use sheet_id as the logical filename; fall back to str(job_id).
-            record_filename: str = job.sheet_id if job.sheet_id else str(job_id)
-            tags_str: str = ", ".join(ai_data.get("tags", []))
 
             existing_stmt = select(AiDatasetRecord).where(
                 AiDatasetRecord.filename == record_filename
