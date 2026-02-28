@@ -90,7 +90,7 @@ async def search_relevant_sheets(db: AsyncSession, user_message: str) -> str:
     sheets = result.scalars().all()
 
     if not sheets:
-        logger.info(f"search_relevant_sheets: No sheets found for keywords: {words}")
+        logger.info(f"search_relevant_sheets: No sheets found for keywords: {keywords}")
         return "ไม่มีข้อมูลชีทในระบบที่ตรงกับคำค้นหา"
         
     formatted_sheets = []
