@@ -25,8 +25,11 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # อนุญาตให้ Docs Hub ส่ง Request มาหาได้
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4321"], # URL ของหน้า Docs
-    allow_credentials=True, # Added to allow session cookies/auth if needed
+    allow_origins=[
+        "http://localhost:4321",  # Docs Hub
+        "http://localhost:9000",  # Frontend app
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
