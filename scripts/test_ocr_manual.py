@@ -35,9 +35,11 @@ async def main():
         
         import json
         ocr_blocks, page_count = await extract_text_from_pdf(file_bytes)
-        print("\n--- Extracted Layout Blocks ---\n")
+        
+        print(f"Processed {page_count} pages.")
+        print("\n--- Extracted Text Blocks ---\n")
         print(json.dumps(ocr_blocks, indent=2, ensure_ascii=False))
-        print(f"\nTotal Pages: {page_count}\n----------------------\n")
+        print("\n----------------------\n")
     except Exception as e:
         print(f"Error: {e}")
 

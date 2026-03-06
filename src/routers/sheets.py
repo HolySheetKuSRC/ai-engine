@@ -37,15 +37,15 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
             
             ocr_blocks, page_count = await extract_text_from_pdf(file_bytes)
             
-            # Combine all text for analysis and junk filtering
-            full_ocr_text = "\n\n".join(block["text"] for block in ocr_blocks)
+            # Concatenate all text for analysis and filtering
+            full_text = "\n\n".join([block["text"] for block in ocr_blocks])
             
             # Security: Junk Filter
-            if is_junk_content(full_ocr_text):
+            if is_junk_content(full_text):
                 raise ValueError("Invalid or unreadable content (Junk Filter)")
 
             # 2. AI Analysis (Chunking handled in service)
-            ai_data = await analyze_sheet_content(full_ocr_text)
+            ai_data = await analyze_sheet_content(full_text)
             
             summary = ai_data.get("summary", "No summary available")
             file_hash = calculate_file_hash(file_bytes)
@@ -174,10 +174,18 @@ async def get_job_status(job_id: UUID, db: AsyncSession = Depends(get_async_sess
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
         
+    # Backward Compatibility: Flatten ocr_content if it's a list
+    formatted_result = job.result
+    if formatted_result and isinstance(formatted_result.get("ocr_content"), list):
+        formatted_result = dict(formatted_result)  # Copy
+        formatted_result["ocr_content"] = "\n\n".join(
+            [block.get("text", "") for block in formatted_result["ocr_content"] if isinstance(block, dict)]
+        )
+
     return {
         "job_id": job.id,
         "status": job.status,
-        "result": job.result,
+        "result": formatted_result,
         "error_message": job.error_message,
         "created_at": job.created_at
     }
@@ -200,11 +208,19 @@ async def get_job_by_sheet(sheet_id: str, db: AsyncSession = Depends(get_async_s
     if not job:
         raise HTTPException(status_code=404, detail=f"No job found for sheet_id: {sheet_id}")
         
+    # Backward Compatibility: Flatten ocr_content if it's a list
+    formatted_result = job.result
+    if formatted_result and isinstance(formatted_result.get("ocr_content"), list):
+        formatted_result = dict(formatted_result)  # Copy
+        formatted_result["ocr_content"] = "\n\n".join(
+            [block.get("text", "") for block in formatted_result["ocr_content"] if isinstance(block, dict)]
+        )
+        
     return {
         "job_id": job.id,
         "sheet_id": job.sheet_id,
         "status": job.status,
-        "result": job.result,
+        "result": formatted_result,
         "error_message": job.error_message,
         "created_at": job.created_at
     }
