@@ -40,3 +40,6 @@ langsmith
 supabase
 google-genai
 PyJWT>=2.8.0
+opencv-python-headless
+numpy
+pytesseract

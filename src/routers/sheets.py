@@ -36,14 +36,17 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
             # Security: Check file size/bytes/hash checks could be done here or in endpoint.
             # (Doing it here to keep endpoint fast, but repeated hash calc is okay)
             
-            ocr_text, page_count = await extract_text_from_pdf(file_bytes)
+            ocr_blocks, page_count = await extract_text_from_pdf(file_bytes)
+            
+            # Concatenate all text for analysis and filtering
+            full_text = "\n\n".join([block["text"] for block in ocr_blocks])
             
             # Security: Junk Filter
-            if is_junk_content(ocr_text):
+            if is_junk_content(full_text):
                 raise ValueError("Invalid or unreadable content (Junk Filter)")
 
             # 2. AI Analysis (Chunking handled in service)
-            ai_data = await analyze_sheet_content(ocr_text)
+            ai_data = await analyze_sheet_content(full_text)
             
             summary = ai_data.get("summary", "No summary available")
             file_hash = calculate_file_hash(file_bytes)
@@ -58,8 +61,8 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
 
             # Construct Result
             final_result = {
-                "filename": record_filename,  # was "async_job" — now the real sheet/job ID
-                "ocr_content": ocr_text,
+                "filename": record_filename, 
+                "ocr_content": ocr_blocks,
                 "summary": summary,
                 "assessment": ai_data.get("assessment", []),
                 "tags": ai_data.get("tags", []),
@@ -79,7 +82,7 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
 
             if existing_record:
                 # Update in place so chat tutor mode also gets fresh content
-                existing_record.raw_text = ocr_text
+                existing_record.raw_text = full_text
                 existing_record.summary_text = summary
                 existing_record.tags = tags_str
                 existing_record.source_type = "sheet"
@@ -87,7 +90,7 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
                 dataset_record = AiDatasetRecord(
                     filename=record_filename,
                     source_type="sheet",
-                    raw_text=ocr_text,
+                    raw_text=full_text,
                     summary_text=summary,
                     tags=tags_str,
                 )
@@ -200,10 +203,18 @@ async def get_job_status(job_id: UUID, db: AsyncSession = Depends(get_async_sess
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
         
+    # Backward Compatibility: Flatten ocr_content if it's a list
+    formatted_result = job.result
+    if formatted_result and isinstance(formatted_result.get("ocr_content"), list):
+        formatted_result = dict(formatted_result)  # Copy
+        formatted_result["ocr_content"] = "\n\n".join(
+            [block.get("text", "") for block in formatted_result["ocr_content"] if isinstance(block, dict)]
+        )
+
     return {
         "job_id": job.id,
         "status": job.status,
-        "result": job.result,
+        "result": formatted_result,
         "error_message": job.error_message,
         "created_at": job.created_at
     }
@@ -226,11 +237,19 @@ async def get_job_by_sheet(sheet_id: str, db: AsyncSession = Depends(get_async_s
     if not job:
         raise HTTPException(status_code=404, detail=f"No job found for sheet_id: {sheet_id}")
         
+    # Backward Compatibility: Flatten ocr_content if it's a list
+    formatted_result = job.result
+    if formatted_result and isinstance(formatted_result.get("ocr_content"), list):
+        formatted_result = dict(formatted_result)  # Copy
+        formatted_result["ocr_content"] = "\n\n".join(
+            [block.get("text", "") for block in formatted_result["ocr_content"] if isinstance(block, dict)]
+        )
+        
     return {
         "job_id": job.id,
         "sheet_id": job.sheet_id,
         "status": job.status,
-        "result": job.result,
+        "result": formatted_result,
         "error_message": job.error_message,
         "created_at": job.created_at
     }
