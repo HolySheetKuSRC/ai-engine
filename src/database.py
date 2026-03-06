@@ -43,6 +43,7 @@ async def init_db():
         # Import models to ensure they are registered with Base.metadata
         from src.models.chat import ChatHistory
         from src.models.ai_dataset import AiDatasetRecord
+        from src.models.sales_session import SalesSessionState
         
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
