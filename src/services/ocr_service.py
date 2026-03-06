@@ -1,12 +1,24 @@
-
 import os
 import asyncio
-import aiofiles
 import hashlib
-import re
-from typing import Tuple
+import json
+import base64
+import cv2
+import numpy as np
+from typing import Tuple, List, Dict, Any
 from pypdf import PdfReader
-from typhoon_ocr import ocr_document
+import aiofiles
+from pdf2image import convert_from_bytes
+from openai import AsyncOpenAI
+
+from src.services.image_processor import deskew_image, preprocess_for_layout_analysis, detect_text_blocks
+from typhoon_ocr.ocr_utils import get_prompt
+
+# Async OpenAI client for Typhoon OCR
+typhoon_client = AsyncOpenAI(
+    base_url=os.getenv("TYPHOON_BASE_URL", "https://api.opentyphoon.ai/v1"),
+    api_key=os.getenv("TYPHOON_OCR_API_KEY") or os.getenv("TYPHOON_API_KEY") or os.getenv("OPENAI_API_KEY")
+)
 
 def calculate_file_hash(file_bytes: bytes) -> str:
     """Calculates MD5 hash of file bytes."""
@@ -20,53 +32,106 @@ def is_junk_content(text: str) -> bool:
     """
     return len(text) < 10
 
-async def extract_text_from_pdf(file_bytes: bytes) -> Tuple[str, int]:
-    """
-    Extracts text from a PDF file (bytes) using Typhoon OCR.
-    Handles multi-page PDFs by processing pages concurrently.
-    """
-    temp_filename = f"/tmp/temp_ocr_{os.urandom(8).hex()}.pdf"
+async def call_typhoon_vision_base64(base64_img: str, prompt: str, model: str = "typhoon-ocr") -> str:
+    """Sends a single base64 image block directly to Typhoon Vision API."""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_img}"}},
+            ],
+        }
+    ]
     
-    try:
-        # 1. Save bytes to a temporary file
-        async with aiofiles.open(temp_filename, "wb") as f:
-            await f.write(file_bytes)
+    for attempt in range(3):
+        try:
+            response = await typhoon_client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=16384,
+                extra_body={
+                    "repetition_penalty": 1.1, # v1.5 standard
+                    "temperature": 0.1,
+                    "top_p": 0.6,
+                },
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            if "429" in str(e) and attempt < 2:
+                await asyncio.sleep(2 ** attempt) # Exponential backoff: 1s, 2s
+            else:
+                raise e
+
+async def extract_text_from_pdf(file_bytes: bytes) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Extracts text from a PDF file (bytes) using a Two-Pass Pipeline:
+    1. OpenCV Layout Analysis (Bounding Boxes).
+    2. Typhoon OCR on cropped image blocks.
+    
+    Returns:
+        A tuple of (List of layout blocks, total page count)
+        Layout blocks format: [{"text": str, "bbox": {"x": int, "y": int, "w": int, "h": int}, "page_number": int}, ...]
+    """
+    # 1. Convert PDF to images
+    images = await asyncio.to_thread(convert_from_bytes, file_bytes)
+    
+    num_pages = len(images)
+    max_pages = min(num_pages, 50)
+    
+    ocr_results = []
+    
+    prompt_fn = get_prompt("v1.5")
+    prompt_text = prompt_fn(figure_language="Thai")
+    
+    semaphore = asyncio.Semaphore(5)  # Global limit of 5 concurrent requests
+    
+    for page_idx in range(max_pages):
+        pil_image = images[page_idx]
+        
+        # Convert PIL to cv2 BGR format
+        open_cv_image = np.array(pil_image)
+        if len(open_cv_image.shape) == 3 and open_cv_image.shape[2] == 3:
+            open_cv_image = open_cv_image[:, :, ::-1].copy() # RGB to BGR
             
-        # 2. Count pages
-        reader = PdfReader(temp_filename)
-        num_pages = len(reader.pages)
+        # 1. Image Preprocessing (Deskewing)
+        aligned_img = deskew_image(open_cv_image)
         
-        # Limit to 50 pages as per requirement
-        max_pages = min(num_pages, 50)
+        # 2. Pass 1 - Layout Analysis
+        binary_mask = preprocess_for_layout_analysis(aligned_img)
+        blocks = detect_text_blocks(binary_mask)
         
-        # 3. Process pages concurrently with a Semaphore
-        semaphore = asyncio.Semaphore(5)  # Limit concurrent requests
-        results = [None] * max_pages
-
-        async def process_page(page_idx):
+        # If no blocks detected, fallback to full page OCR
+        if not blocks:
+            height, width = aligned_img.shape[:2]
+            blocks = [{"x": 0, "y": 0, "w": width, "h": height}]
+        
+        # 3. Pass 2 - Text Recognition (Async)
+        async def process_block(block: Dict[str, int]) -> Dict[str, Any]:
+            x, y, w, h = block["x"], block["y"], block["w"], block["h"]
+            
+            cropped_img = aligned_img[y:y+h, x:x+w]
+            
+            success, encoded_image = cv2.imencode('.png', cropped_img)
+            if not success:
+                return {"text": "", "bbox": block, "page_number": page_idx + 1}
+                
+            base64_str = base64.b64encode(encoded_image.tobytes()).decode('utf-8')
+            
             async with semaphore:
-                # page_num in typhoon_ocr is 1-indexed (based on docs example page_num=2)
-                # But let's verify if default is 1. Docs say "default is 1".
-                # So loop from 1 to max_pages.
-                page_number = page_idx + 1
-                return await asyncio.to_thread(
-                    ocr_document,
-                    pdf_or_image_path=temp_filename,
-                    page_num=page_number
-                )
+                try:
+                    text = await call_typhoon_vision_base64(base64_str, prompt_text)
+                    return {"text": text.strip(), "bbox": block, "page_number": page_idx + 1}
+                except Exception as e:
+                    print(f"Error OCR'ing block on page {page_idx + 1}: {e}")
+                    return {"text": "", "bbox": block, "page_number": page_idx + 1}
 
-        tasks = [process_page(i) for i in range(max_pages)]
-        pages_text = await asyncio.gather(*tasks)
+        # Run OCR concurrently for all blocks on this page
+        # Note: semaphore intrinsically limits to 5 at a time
+        tasks = [process_block(block) for block in blocks]
+        page_results = await asyncio.gather(*tasks)
         
-        # 4. Concatenate results
-        full_text = "\n\n".join(pages_text)
-        return full_text, num_pages
+        valid_results = [res for res in page_results if res["text"]]
+        ocr_results.extend(valid_results)
 
-    except Exception as e:
-        print(f"Error during OCR processing: {e}")
-        raise e
-        
-    finally:
-        # 5. Cleanup
-        if os.path.exists(temp_filename):
-            os.remove(temp_filename)
+    return ocr_results, num_pages

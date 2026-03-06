@@ -35,14 +35,17 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
             # Security: Check file size/bytes/hash checks could be done here or in endpoint.
             # (Doing it here to keep endpoint fast, but repeated hash calc is okay)
             
-            ocr_text, page_count = await extract_text_from_pdf(file_bytes)
+            ocr_blocks, page_count = await extract_text_from_pdf(file_bytes)
+            
+            # Combine all text for analysis and junk filtering
+            full_ocr_text = "\n\n".join(block["text"] for block in ocr_blocks)
             
             # Security: Junk Filter
-            if is_junk_content(ocr_text):
+            if is_junk_content(full_ocr_text):
                 raise ValueError("Invalid or unreadable content (Junk Filter)")
 
             # 2. AI Analysis (Chunking handled in service)
-            ai_data = await analyze_sheet_content(ocr_text)
+            ai_data = await analyze_sheet_content(full_ocr_text)
             
             summary = ai_data.get("summary", "No summary available")
             file_hash = calculate_file_hash(file_bytes)
@@ -53,7 +56,7 @@ async def process_analysis_task(job_id: UUID, file_bytes: bytes, webhook_url: st
             # Construct Result
             final_result = {
                 "filename": "async_job", # We might want to pass filename too, but for now simple
-                "ocr_content": ocr_text,
+                "ocr_content": ocr_blocks,
                 "summary": summary,
                 "assessment": ai_data.get("assessment", []),
                 "tags": ai_data.get("tags", []),

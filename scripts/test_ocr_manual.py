@@ -33,10 +33,11 @@ async def main():
         with open(file_path, "rb") as f:
             file_bytes = f.read()
         
-        text = await extract_text_from_pdf(file_bytes)
-        print("\n--- Extracted Text ---\n")
-        print(text)
-        print("\n----------------------\n")
+        import json
+        ocr_blocks, page_count = await extract_text_from_pdf(file_bytes)
+        print("\n--- Extracted Layout Blocks ---\n")
+        print(json.dumps(ocr_blocks, indent=2, ensure_ascii=False))
+        print(f"\nTotal Pages: {page_count}\n----------------------\n")
     except Exception as e:
         print(f"Error: {e}")
 

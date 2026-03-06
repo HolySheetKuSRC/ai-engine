@@ -39,3 +39,5 @@ slowapi
 langsmith
 supabase
 google-genai
+opencv-python-headless
+numpy
