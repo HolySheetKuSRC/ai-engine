@@ -27,15 +27,28 @@ async def process_audio_job(job_id: uuid.UUID, file_path: str):
     7. Save result to DB (AiDatasetRecord + Job Result).
     8. Cleanup files.
     """
+    optimized_path = None
     async with async_session_maker() as session:
         try:
             # 1. Update Job Status to Processing
             await _update_job_status(session, job_id, "processing")
             
+            # 1.5. Convert to optimized MP3
+            optimized_path = f"/tmp/{job_id.hex}_optimized.mp3"
+            process = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-i", file_path, 
+                "-ac", "1", "-b:a", "64k", optimized_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode != 0:
+                raise Exception(f"FFmpeg Error: {stderr.decode()}")
+            
             # 2. Load Audio
             # Use asyncio.to_thread to run blocking I/O in a separate thread
             # preventing the event loop from freezing.
-            audio = await asyncio.to_thread(AudioSegment.from_file, file_path)
+            audio = await asyncio.to_thread(AudioSegment.from_file, optimized_path)
             
             # 3. Chunking
             duration_ms = len(audio)
@@ -106,9 +119,11 @@ async def process_audio_job(job_id: uuid.UUID, file_path: str):
             print(f"Job {job_id} failed: {e}")
             
         finally:
-            # 8. Cleanup Original File
+            # 8. Cleanup Original File and Optimized File
             if os.path.exists(file_path):
                 os.remove(file_path)
+            if optimized_path and os.path.exists(optimized_path):
+                os.remove(optimized_path)
 
 async def _update_job_status(session: AsyncSession, job_id: uuid.UUID, status: str, error_message: str = None):
     stmt = (
