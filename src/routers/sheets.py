@@ -101,6 +101,8 @@ async def analyze_sheet(
             "message": "Job accepted. Processing in background."
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in analyze endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))

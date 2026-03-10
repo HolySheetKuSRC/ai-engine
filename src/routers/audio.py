@@ -77,6 +77,8 @@ async def transcribe_audio_background(
             "status": "processing"
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         # Cleanup if initial save fails
         await session.delete(job)

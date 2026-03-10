@@ -19,7 +19,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 3. Copy Code
 COPY . .
 
-# 4. Expose Port & Run
+# 4. Create non-root user and set up temp directories
+RUN adduser --disabled-password --gecos '' appuser
+RUN mkdir -p /app/temp_sheets /app/temp_audio && chown -R appuser:appuser /app/temp_sheets /app/temp_audio
+
+# 5. Expose Port & Run
 EXPOSE 8000
 
 # Use gunicorn with uvicorn workers and 600s timeout

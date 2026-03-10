@@ -16,8 +16,8 @@ BASE_URL = "https://api.opentyphoon.ai/v1"
 client = AsyncOpenAI(
     api_key=TYPHOON_API_KEY,
     base_url=BASE_URL,
-    timeout=45.0,
-    max_retries=1
+    timeout=60.0,
+    max_retries=0  # tenacity handles retries; SDK retries would double the wait
 )
 
 MODEL_NAME = "typhoon-v2.5-30b-a3b-instruct"
@@ -85,7 +85,7 @@ def _empty_result():
     }
 
 @retry(
-    stop=stop_after_attempt(5),
+    stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=5, min=5, max=30),
     retry=retry_if_exception_type(Exception),
     before_sleep=lambda retry_state: logger.warning(f"Retrying _call_ai_api... Attempt {retry_state.attempt_number} after error: {retry_state.outcome.exception()}")
