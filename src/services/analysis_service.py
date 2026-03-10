@@ -16,7 +16,7 @@ BASE_URL = "https://api.opentyphoon.ai/v1"
 client = AsyncOpenAI(
     api_key=TYPHOON_API_KEY,
     base_url=BASE_URL,
-    timeout=60.0,
+    timeout=45.0,
     max_retries=0  # tenacity handles retries; SDK retries would double the wait
 )
 

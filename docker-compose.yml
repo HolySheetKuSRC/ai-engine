@@ -22,7 +22,6 @@ services:
   celery-worker:
     build: .
     command: celery -A src.celery_app worker --loglevel=info
-    user: appuser
     volumes:
       - .:/app
       - ./data:/app/data
