@@ -3,6 +3,7 @@ import uuid
 import shutil
 import asyncio
 import subprocess
+from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
@@ -114,3 +115,36 @@ async def get_audio_history(
         )
         for job in jobs
     ]
+
+
+@router.delete("/jobs/{job_id}")
+async def delete_audio_job(
+    job_id: uuid.UUID,
+    session: AsyncSession = Depends(get_async_session),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """
+    Delete an audio transcription job record by job_id.
+    Also cleans up any residual chunk files in ./temp_audio.
+    """
+    stmt = select(AnalyzeJob).where(
+        AnalyzeJob.id == job_id,
+        AnalyzeJob.source_type == "audio",
+    )
+    result = await session.execute(stmt)
+    job = result.scalar_one_or_none()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Audio job not found")
+
+    await session.delete(job)
+    await session.commit()
+
+    # Clean up any residual temp files for this job (e.g. chunk files left by audio_processor)
+    for temp_file in Path(TEMP_DIR).glob(f"{job_id}*"):
+        try:
+            temp_file.unlink()
+        except FileNotFoundError:
+            pass
+
+    return {"message": "Audio job deleted successfully", "job_id": str(job_id)}

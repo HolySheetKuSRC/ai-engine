@@ -1,3 +1,5 @@
+import os
+from pathlib import Path
 from src.services.ocr_service import extract_text_from_pdf, calculate_file_hash, is_junk_content
 from src.services.analysis_service import analyze_sheet_content
 from src.services.webhook_service import send_webhook
@@ -162,3 +164,31 @@ async def get_job_by_sheet(sheet_id: str, db: AsyncSession = Depends(get_async_s
         "error_message": job.error_message,
         "created_at": job.created_at
     }
+
+
+@router.delete("/jobs/{job_id}", status_code=status.HTTP_200_OK)
+async def delete_sheet_job(job_id: UUID, db: AsyncSession = Depends(get_async_session)):
+    """
+    Delete a sheet OCR job record by job_id.
+    Also cleans up any residual files in ./temp_sheets if present.
+    """
+    stmt = select(AnalyzeJob).where(AnalyzeJob.id == job_id)
+    result = await db.execute(stmt)
+    job = result.scalar_one_or_none()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    await db.delete(job)
+    await db.commit()
+
+    # Clean up any residual temp files (gracefully ignore if already removed)
+    temp_dir = Path("./temp_sheets")
+    if temp_dir.is_dir():
+        for temp_file in temp_dir.glob(f"{job_id}*"):
+            try:
+                temp_file.unlink()
+            except FileNotFoundError:
+                pass
+
+    return {"message": "Sheet job deleted successfully", "job_id": job_id}
