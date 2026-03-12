@@ -16,3 +16,7 @@ class AudioHistoryItem(BaseModel):
 
 class AudioHistoryResponse(BaseModel):
     items: List[AudioHistoryItem]
+
+
+class AudioResultUpdate(BaseModel):
+    result_text: str
