@@ -68,7 +68,9 @@ async def extract_text_from_pdf(file_bytes: bytes) -> Tuple[List[Dict[str, Any]]
     api_key = os.getenv("TYPHOON_API_KEY") or os.getenv("TYPHOON_OCR_API_KEY") or os.getenv("OPENAI_API_KEY")
     client = AsyncOpenAI(
         base_url=os.getenv("TYPHOON_BASE_URL", 'https://api.opentyphoon.ai/v1'),
-        api_key=api_key
+        api_key=api_key,
+        timeout=45.0,
+        max_retries=0  # avoid silent double-waits; failures surface immediately
     )
     
     # 1. Convert PDF bytes to PIL Images

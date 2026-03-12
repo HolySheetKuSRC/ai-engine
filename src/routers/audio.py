@@ -3,6 +3,7 @@ import uuid
 import shutil
 import asyncio
 import subprocess
+from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
@@ -13,6 +14,8 @@ from src.core.auth import CurrentUser, get_current_user
 from src.database import AnalyzeJob, get_async_session
 from src.schemas.audio import AudioHistoryItem, AudioResultUpdate
 from src.services.audio_processor import process_audio_job
+
+from src.tasks import process_audio_task
 
 router = APIRouter(
     prefix="/api/audio",
@@ -27,33 +30,8 @@ def save_file_sync(file_obj, dest_path):
     with open(dest_path, "wb") as buffer:
         shutil.copyfileobj(file_obj, buffer)
 
-async def convert_to_optimized_mp3(input_path: str) -> str:
-    """
-    Convert audio to optimized mono 64k mp3 using ffmpeg via subprocess.
-    """
-    output_path = f"/tmp/{uuid.uuid4().hex}.mp3"
-    
-    # Run ffmpeg asynchronously
-    process = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-y", "-i", input_path, 
-        "-ac", "1", "-b:a", "64k", output_path,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    
-    stdout, stderr = await process.communicate()
-    
-    if process.returncode != 0:
-        error_msg = stderr.decode()
-        print(f"FFmpeg Error: {error_msg}")
-        raise HTTPException(status_code=500, detail="Audio conversion failed.")
-        
-    return output_path
-
-
 @router.post("/transcribe")
 async def transcribe_audio_background(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_async_session),
     current_user: CurrentUser = Depends(get_current_user),
@@ -91,23 +69,7 @@ async def transcribe_audio_background(
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, save_file_sync, file.file, file_path)
             
-        # Convert to optimized MP3 (asynchronous subprocess)
-        optimized_path = await convert_to_optimized_mp3(file_path)
-        
-        # 4. Dispatch Background Task with the OPTIMIZED path
-        # Note: audio_processor needs to clean up the optimized_path
-        # but we also must ensure we clean up the original file_path.
-        # It's safer to let the router clean up the original and pass the optimized one.
-        # However, to be completely safe with background tasks, we should let the
-        # background task clean up both, or clean up the original here if we don't need it.
-        # Actually, since audio_processor receives exactly one path, we'll let it process and clean 
-        # the optimized path. We should clean up the RAW file here right after conversion.
-        
-        background_tasks.add_task(process_audio_job, job_id, optimized_path)
-        
-        # Fast cleanup of the raw uploaded file, since we have the optimized one
-        if os.path.exists(file_path):
-             os.remove(file_path)
+        process_audio_task.delay(str(job_id), file_path)
         
         # 5. Return Immediately
         return {
@@ -115,6 +77,8 @@ async def transcribe_audio_background(
             "status": "processing"
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         # Cleanup if initial save fails
         await session.delete(job)
@@ -154,6 +118,8 @@ async def get_audio_history(
         for job in jobs
     ]
 
+
+
 @router.delete("/jobs/{job_id}")
 async def delete_audio_job(
     job_id: uuid.UUID,
@@ -178,12 +144,13 @@ async def delete_audio_job(
     await session.commit()
 
     # Clean up any residual temp files for this job (e.g. chunk files left by audio_processor)
-    from pathlib import Path
+
     for temp_file in Path(TEMP_DIR).glob(f"{job_id}*"):
         try:
             temp_file.unlink()
         except FileNotFoundError:
             pass
+
 
     return {"message": "Audio job deleted successfully", "job_id": str(job_id)}
 
@@ -218,4 +185,5 @@ async def update_audio_result(
     await session.commit()
 
     return {"message": "Transcription updated successfully", "job_id": str(job_id)}
+
 

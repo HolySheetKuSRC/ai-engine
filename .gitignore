@@ -13,3 +13,4 @@ data/*.db
 !data/.gitkeep
 *.db
 temp_audio/
+temp_sheets/
